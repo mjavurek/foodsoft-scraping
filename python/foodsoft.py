@@ -736,14 +736,32 @@ class FSConnector:
             for dt in invoice_page.find_all("dt"):
                 label = dt.string[:-1]  # cut ":"
                 value = dt.find_next_sibling("dd")
-                if label in ["Bestellung", "Lieferung"]:
-                    a_list = value.find_all("a")
-                    d[label+"-Links"] = [a.get('href') for a in a_list]
-                    d[label+"-Datum"] = [a.string for a in a_list]
+                #print(f"  {label=} {value=}")
+                if label == "Bestellung":
+                    value = [ 
+                        dict(
+                            url = a.get('href'),
+                            date = a.string,
+                            id = a.get('href').split("=")[-1],
+                        ) for a in value.find_all("a")]
+                elif label == "Lager-Lieferung":
+                    value = [
+                        dict(
+                            url = a.get('href'),
+                            date = a.string,
+                            supplier_id = a.get('href').split("/")[-3],
+                            delivery_id = a.get('href').split("/")[-1],
+                        )
+                        for a in value.find_all("a")]
+                elif label == "Anhang":
+                    value = dict(url = value.a.get('href'), name=list(value.a.strings)[-1].strip())
+                elif label == "Finanzlink":
+                    value = value.a.get('href')
                 elif label in ["Betrag", "Pfand berechnet", "Pfand gutgeschrieben", "Pfandbereinigter Betrag", "Total"]:
                     value = _float(value.string)  # 236,70 € 
                 else:
                     value = value.string
+                    if value: value = value.strip()
                 d[label] = value
             return d
         else:
@@ -791,7 +809,7 @@ class FSConnector:
                                       ["price"], orders, "%.2f" % ordered, "%.2f" % (ordered*article_list[name]["price"])]) + "\n")
         return article_list
 
-    def get_invoices(self, per_page=20):
+    def get_invoices(self, per_page=20, details=False):
         page_number = 1
         page = self.get_page("finance/invoices?page="+str(page_number)+"&per_page="+str(per_page))
 
@@ -811,14 +829,35 @@ class FSConnector:
                     else:
                         if column_name[i] == "Rechnungsdatum":
                             value = td.a.string
-                        elif column_name[i] in ["Lieferung", "Bestellung"]:
-                            value = [a.get('href').split("=")[-1]
-                                     for a in td.find_all("a")]
+                        elif column_name[i] == "Bestellung":
+                            # <td><a href="/franckkistl/finance/balancing/new?order_id=5433">03.07.2024</a>,
+                            #     <a href="/franckkistl/finance/balancing/new?order_id=5444">10.07.2024</a>,
+                            #     <a href="/franckkistl/finance/balancing/new?order_id=5462">24.07.2024</a></td>
+                            value = [ 
+                                dict(
+                                    url = a.get('href'),
+                                    date = a.string,
+                                    id = a.get('href').split("=")[-1],
+                                )
+                                for a in td.find_all("a")]
+                        elif column_name[i] == "Lager-Lieferung":
+                            # <td><a href="/franckkistl/suppliers/22/deliveries/410">09.07.2024</a></td>
+                            value = [
+                                dict(
+                                    url = a.get('href'),
+                                    date = a.string,
+                                    supplier_id = a.get('href').split("/")[-3],
+                                    delivery_id = a.get('href').split("/")[-1],
+                                )
+                                for a in td.find_all("a")]
+
                         # elif colmun_name[i]=="Notiz":
                         else:
                             value = td.string
                         invoices[_id][column_name[i]] = value
             # print(name, articles[name])
+            if details:
+                invoices[_id].update(self.get_invoice(_id))
         return invoices
 
 
