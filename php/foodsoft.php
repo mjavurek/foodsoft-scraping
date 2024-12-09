@@ -1,6 +1,8 @@
 <?php
 
 require_once "simplehtmldom/simple_html_dom.php";
+# https://sourceforge.net/projects/simplehtmldom/
+# https://enb.iisd.org/_inc/simple_html_dom/manual/manual.htm
 
 class Foodcoop
 {
@@ -72,15 +74,21 @@ class Foodsoft
 
   public function __construct($foodsoft_user) #$host, $foodcoop, $user, $password)
   {
+    $this->foodsoft_user = $foodsoft_user;
+    $this->foodcoop_name = $foodsoft_user->foodcoop->name;
     $this->fs_url = $foodsoft_user->foodcoop->host; # "https://app.foodcoops.at";
     $this->fs_fc_url = $this->fs_url . "/" . $foodsoft_user->foodcoop->name;
     $this->login_url = $this->fs_fc_url . "/login"; //
     $this->login_action_url = $this->fs_fc_url . "/sessions"; // submit $fs_urlurl from the login form
     $this->is_localhost = strpos($_SERVER['HTTP_HOST'], "localhost") === 0;
     $this->do_post = !$this->is_localhost;
-    $this->login($foodsoft_user->username, $foodsoft_user->password);
-    $this->foodsoft_user = $foodsoft_user;
-    $this->foodcoop_name = $foodsoft_user->foodcoop->name;
+    if (!$this->login($foodsoft_user->username, $foodsoft_user->password)) {
+      $this->close();
+      print "<p>";
+      print "Foodsoft-Anmeldung für '$foodsoft_user->username' auf $this->login_url fehlgeschlagen:<br>";
+      print str_get_html($this->page)->find("div.alert", 0)->plaintext;
+      print "</p>";
+    }
   }
 
   public function get_username()
@@ -92,6 +100,7 @@ class Foodsoft
   {
     return $this->foodsoft_user->foodcoop->name;
   }
+
   public function get_foodcoop_real_name()
   {
     return $this->foodsoft_user->foodcoop->real_name;
@@ -145,6 +154,20 @@ class Foodsoft
   {
     return "<a href='" . $this->url($url) . "' target='$target'>$linktext</a>";
   }
+  private function curl_init()
+  {
+    $this->channel = curl_init();
+  }
+
+  private function curl_setopt($option, $value)
+  {
+    curl_setopt($this->channel, $option, $value);
+  }
+
+  private function curl_exec()
+  {
+    return curl_exec($this->channel);
+  }
 
   private function login($user, $password)
   {
@@ -155,21 +178,21 @@ class Foodsoft
       'commit' => 'Anmelden',
       "authenticity_token" => ""
     ); //login form field names and values
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 5.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/35.0.2309.372 Safari/537.36');
-    curl_setopt($ch, CURLOPT_HTTPHEADER, $this->header());
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 0);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-    curl_setopt($ch, CURLOPT_COOKIEJAR, realpath('./cookie.txt'));
-    curl_setopt($ch, CURLOPT_COOKIEFILE, realpath('./cookie.txt'));
-    curl_setopt($ch, CURLOPT_URL, $this->login_url);
-    $p = curl_exec($ch);
-    if (!$p) {
+    $this->curl_init();
+    $this->curl_setopt(CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 5.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/35.0.2309.372 Safari/537.36');
+    $this->curl_setopt(CURLOPT_HTTPHEADER, $this->header());
+    $this->curl_setopt(CURLOPT_RETURNTRANSFER, 1);
+    $this->curl_setopt(CURLOPT_FOLLOWLOCATION, 0);
+    $this->curl_setopt(CURLOPT_SSL_VERIFYHOST, false);
+    $this->curl_setopt(CURLOPT_SSL_VERIFYPEER, false);
+    $this->curl_setopt(CURLOPT_COOKIEJAR, realpath('./cookie.txt'));
+    $this->curl_setopt(CURLOPT_COOKIEFILE, realpath('./cookie.txt'));
+    $this->curl_setopt(CURLOPT_URL, $this->login_url);
+    $page = $this->curl_exec();
+    if (!$page) {
       print "konnte $this->login_url nicht erreichen.";
       $this->channel = NULL;
-      return;
+      return FALSE;
     }
 
     /* ...
@@ -178,16 +201,15 @@ class Foodsoft
       value="tDVoz6jVZsVPULTJiVFr6fiolcW-GbJJFCUwTrmT2GvqrF6RR-DKhmrltMQaHqx9__geuOfCHvzWQIcHCgF3jg" 
       autocomplete="off" />
     ... */
-    $loginFields["authenticity_token"] = str_get_html($p)->find('input[name=authenticity_token]', 0)->value;
+    $loginFields["authenticity_token"] = str_get_html($page)->find('input[name=authenticity_token]', 0)->value;
     //print "token: ".$loginFields["authenticity_token"];
 
-    curl_setopt($ch, CURLOPT_POST, 1);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($loginFields));
-    curl_setopt($ch, CURLOPT_URL, $this->login_action_url);
-    curl_setopt($ch, CURLOPT_REFERER, $this->login_url);
-    curl_exec($ch);
-
-    $this->channel = $ch;
+    $this->curl_setopt(CURLOPT_POST, 1);
+    $this->curl_setopt(CURLOPT_POSTFIELDS, http_build_query($loginFields));
+    $this->curl_setopt(CURLOPT_URL, $this->login_action_url);
+    $this->curl_setopt(CURLOPT_REFERER, $this->login_url);
+    $this->page = $this->curl_exec();
+    return strpos($this->page, "redirected") !== FALSE;
   }
 
   public function has_connection()
@@ -200,7 +222,7 @@ class Foodsoft
     $this->url = $url;
     curl_setopt($this->channel, CURLOPT_URL, $url);
     curl_setopt($this->channel, CURLOPT_POST, 0);
-    $this->page = curl_exec($this->channel);
+    $this->page = $this->curl_exec();
     return $this->page;
   }
 
@@ -212,21 +234,149 @@ class Foodsoft
     return $this->html;
   }
 
+
+
   function post($url, $data)
   {
-    curl_setopt($this->channel, CURLOPT_URL, $url);
-    curl_setopt($this->channel, CURLOPT_POST, 1);
-    curl_setopt($this->channel, CURLOPT_POSTFIELDS, http_build_query($data));
-    curl_setopt($this->channel, CURLOPT_REFERER, $this->url);
-    curl_setopt(
-      $this->channel,
+    $this->curl_setopt(CURLOPT_URL, $url);
+    $this->curl_setopt(CURLOPT_POST, 1);
+    $this->curl_setopt(CURLOPT_POSTFIELDS, http_build_query($data));
+    $this->curl_setopt(CURLOPT_REFERER, $this->url);
+    $this->curl_setopt(
       CURLOPT_HTTPHEADER,
       $this->header(array("X-CSRF-Token" => $this->csfr_token))
     );
     if ($this->do_post) {
-      curl_exec($this->channel);
+      $this->curl_exec();
     }
   }
+
+  function get_user_name($id)
+  {
+    $html = $this->get_html($this->fc_url("/admin/users/$id"));
+    // print($html);
+    $title = $html->find("h1", 0)->plaintext; // Anne J.
+    return $title;
+  }
+
+  function get_user_details()
+  // for current user
+  {
+    $html = $this->get_html($this->fc_url("/home/ordergroup"));
+    if (strlen($html) == 0 || strpos($html, "redirected") > 0)
+      return FALSE;
+    return array(
+      "name" => $html->find("a", 0)->plaintext,
+      "ordergroup" => $html->find("h2", 0)->plaintext,
+      "total_credit" => $html->find("p")[0]->plaintext,
+      "available_credit" => $html->find("p")[1]->plaintext,
+    );
+  }
+
+  function get_ordergroup($user_id)
+  {
+    #print $this->fc_url("/admin/users/" . $user_id) . "\n";
+    $html = $this->get_html($this->fc_url("/admin/users/" . $user_id));
+    #print $html;
+    foreach ($html->find("a") as $a) {
+      // <a href="/franckkistl/admin/ordergroups/136">Daniela M</a>
+      // print htmlspecialchars($a) . "\n";
+      $href = $a->href;
+      if (strpos($href, "/ordergroups/") !== false) {
+        return array(
+          "id" => explode("/", $href)[4],
+          "name" => $a->plaintext,
+        );
+      }
+    }
+    return FALSE;
+  }
+
+  function get_ordergroup_name($id)
+  {
+    $html = $this->get_html($this->fc_url("/admin/ordergroups/$id"));
+    // print($html);
+    $title = $html->find("h1", 0)->plaintext; // Bestellgruppe Anne J.
+    // print $title;
+    strtok($title, " "); // remove "Bestellgruppe "
+    return strtok(";");
+  }
+
+
+
+  function get_users()
+  {
+    $html = $this->get_html($this->fc_url("/foodcoop?per_page=500"));
+    $users = array();
+    foreach ($html->find("table tbody tr") as $tr) {
+      $td = $tr->find("td");
+      if (count($td) >= 2) {
+        $users[] = array(
+          "name" => $td[0]->plaintext,
+          "email" => $td[1]->plaintext,
+        );
+      }
+    }
+    /*
+    0 <th>Name</th>
+    1 <th>E-Mail</th>
+    2 <th>Telefon</th>
+    3 <th>Bestellgruppe</th>
+    4 <th>Arbeitsgruppen</th>
+    */
+    return $users;
+  }
+
+  function get_ordergroups()
+  {
+    $html = $this->get_html($this->fc_url("/foodcoop/ordergroups?per_page=500"));
+    $ordergroups = array();
+    foreach ($html->find("table tbody tr") as $tr) {
+      $td = $tr->find("td");
+      if (count($td) >= 2) {
+        $members = explode(", ", $td[1]->plaintext);
+        foreach ($members as $i => $member) {
+          $members[$i] = trim($member);
+        }
+        $ordergroups[] = array(
+          "name" => $td[0]->plaintext,
+          "members" => $members,
+        );
+      }
+    }
+
+    $members = array();
+    foreach ($ordergroups as $ordergroup) {
+      foreach ($ordergroup["members"] as $member) {
+        if (strlen($member) > 0)
+          $members[$member] = $ordergroup["name"];
+      }
+    }
+    ksort($members);
+
+    return array("ordergroups" => $ordergroups, "members" => $members);
+  }
+
+
+
+
+
+
+  function close()
+  {
+    if ($this->channel) {
+      curl_close($this->channel);
+      $this->channel = NULL;
+    }
+  }
+
+  function __destruct()
+  {
+    $this->close();
+  }
+
+
+
 
 
   function get_orders_admin($n_pages_balanced = 3, $key = "index")
@@ -399,11 +549,13 @@ class Foodsoft
     // scrape order article infos from foodsoft specific order balance page 
     // like e.g. /franckkistl/finance/balancing/new?order_id=5533
     // returns: array("url" => $url, "page" => $page, "articles" => $articles, ...)
-    $url = $this->fs_url(url: $url);
+    $url = $this->url($url);
+    #print "url: $url\n";
     $html = $this->get_html($url); // Create a DOM object from a string
     if (!$html) {
       return false;
     }
+    //print $html;
 
     // get note for order
     $note = $html->find('div[id=note] p', 0);
@@ -615,7 +767,7 @@ class Foodsoft
         // übergeben werden, anscheinend gibt es eine Mindestanzahl an Eigenschaften,
         // die übergeben werden muss. 
         "commit" => "Bestell-Artikel+aktualisieren"
-      ),
+      )
     );
   }
 
@@ -630,9 +782,8 @@ class Foodsoft
       return $group_order_articles;
     }
     $order_id = get_order_id($group_order_url);
-    $order_url = $this->fs_url($group_order_url);
+    $order_url = $this->url($group_order_url);
     $order = $this->get_html($order_url);
-    $article_id = 0; // no access to the foodsoft-id, so lets create our own
     foreach ($order->find('table', 0)->find('tr') as $tr) {
       $article = array();
       $tr_class = $tr->class;
@@ -646,11 +797,12 @@ class Foodsoft
         $article["price"] = $td[$i++]->plaintext;
         $article["ordered"] = $td[$i++]->plaintext;
         $article["received"] = $td[$i++]->plaintext;
-        $article["id"] = "$order_id-$article_id";
+        // $article["id"] = "$order_id-$article_id";
         if (intval($article["ordered"]) > 0 || intval($article["received"]) > 0) {
+          $article["id"] = explode("_", $tr->next_sibling()->id)[1]; # "note_187266"
+          # unfortunately this is not the group order article id, but the order article id.
           $group_order_articles[] = $article;
         }
-        $article_id++;
       }
     }
     return $group_order_articles;
@@ -711,106 +863,6 @@ class Foodsoft
     $invoice["Gewinn"] = $invoice["Total"] - $invoice["Pfandbereinigter Betrag"];
     return $invoice;
   }
-
-
-
-  function get_user_details()
-  {
-    $html = $this->get_html($this->fc_url("/home/ordergroup"));
-    if (strlen($html) == 0 || strpos($html, "redirected") > 0)
-      return FALSE;
-    return array(
-      "name" => $html->find("a", 0)->plaintext,
-      "ordergroup" => $html->find("h2", 0)->plaintext,
-      "total_credit" => $html->find("p")[0]->plaintext,
-      "available_credit" => $html->find("p")[1]->plaintext,
-    );
-  }
-
-  function get_users()
-  {
-    $html = $this->get_html($this->fc_url("/foodcoop?per_page=500"));
-    $users = array();
-    foreach ($html->find("table tbody tr") as $tr) {
-      $td = $tr->find("td");
-      if (count($td) >= 2) {
-        $users[] = array(
-          "name" => $td[0]->plaintext,
-          "email" => $td[1]->plaintext,
-        );
-      }
-    }
-    /*
-    0 <th>Name</th>
-    1 <th>E-Mail</th>
-    2 <th>Telefon</th>
-    3 <th>Bestellgruppe</th>
-    4 <th>Arbeitsgruppen</th>
-    */
-    return $users;
-  }
-
-  function get_ordergroups()
-  {
-    $html = $this->get_html($this->fc_url("/foodcoop/ordergroups?per_page=500"));
-    $ordergroups = array();
-    foreach ($html->find("table tbody tr") as $tr) {
-      $td = $tr->find("td");
-      if (count($td) >= 2) {
-        $members = explode(", ", $td[1]->plaintext);
-        foreach ($members as $i => $member) {
-          $members[$i] = trim($member);
-        }
-        $ordergroups[] = array(
-          "name" => $td[0]->plaintext,
-          "members" => $members,
-        );
-      }
-    }
-
-    $members = array();
-    foreach ($ordergroups as $ordergroup) {
-      foreach ($ordergroup["members"] as $member) {
-        if (strlen($member) > 0)
-          $members[$member] = $ordergroup["name"];
-      }
-    }
-    ksort($members);
-
-    return array("ordergroups" => $ordergroups, "members" => $members);
-  }
-
-
-  function get_ordergroup_name($id)
-  {
-    $html = $this->get_html($this->fc_url("/admin/ordergroups/$id"));
-    // print($html);
-    $title = $html->find("h1", 0)->plaintext; // Bestellgruppe Anne J.
-    // print $title;
-    strtok($title, " "); // remove "Bestellgruppe "
-    return strtok(";");
-  }
-
-  function get_user_name($id)
-  {
-    $html = $this->get_html($this->fc_url("/admin/users/$id"));
-    // print($html);
-    $title = $html->find("h1", 0)->plaintext; // Anne J.
-    return $title;
-  }
-
-
-
-  function close()
-  {
-    curl_close($this->channel);
-  }
-
-  function __destruct()
-  {
-    $this->close();
-  }
-
 }
 
 
