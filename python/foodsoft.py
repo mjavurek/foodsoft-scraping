@@ -7,10 +7,12 @@
 
 from json import dumps
 import logging
+from math import ceil
 import requests
 import os
 import re
 from bs4 import BeautifulSoup as bs
+import csv
 
 import datetime
 # import csv
@@ -26,10 +28,11 @@ logging.basicConfig(level=logging.WARN)
 
 
 def _float(s):
-    if s is None:
+    if not s:
         return 0
     else:
         s = s.strip().split(" ")[0]
+        if not s: return 0
         if "," in s:  # s.find(",")>=0:
             s = s.replace(".", "")
         return float(s.replace(',', '.'))
@@ -41,12 +44,24 @@ def _find_similar_article(name, articles):
     k = max(g, key=g.get)
     return k, g[k]
 
+def negative_red(format, number, positive_green=False):
+    s = format % number
+    if number<0:
+        s = "\x1B[38;2;255;0;0m" + s + "\x1B[m"
+    elif number>0 and positive_green: 
+        s = "\x1B[38;2;0;255;0m" + s + "\x1B[m"
+    return s 
 
 # ---------------------------------------------------------------------------------------------
 
 
 class FSConnector:
-    def __init__(self, url, user=None, password=None):
+    def __init__(self, url=None, user=None, password=None, login=None):
+        if login:
+            url = login.url()
+            user = login.user()
+            password = login.password()  
+
         self._session = None
         self._url = url  
         self._url_login_request = url + 'login'
@@ -70,6 +85,31 @@ class FSConnector:
 
         if user and password:
             self.login(user, password)
+
+    def login(self, user, password):
+        self._user = user
+        self._login_data['nick'] = user
+        self._login_data['password'] = password
+
+        login_header = self._default_header
+
+        self._session = requests.Session()
+        print("login get", self._url_login_request,)
+        request = self._get(self._url_login_request, login_header)
+
+        print("login post", self._url_login_post)
+        login_header['Referer'] = self._url_login_request
+        response = self._post(self._url_login_post,
+                              login_header, self._login_data, request)
+        logging.debug(user + ' logged in sucessfully to ' + self._url)
+        print(user + ' logged in sucessfully to ' + self._url)
+
+    def logout(self):
+        if self._session:
+            self._session.close()
+        self._session = None
+
+
 
     def _get_url(self, href):
         # '/franckkistl/stock_articles/1318' ==> https://app.foodcoops.at/franckkistl/stock_articles/1318
@@ -103,27 +143,6 @@ class FSConnector:
 
         return response
 
-    def login(self, user, password):
-        self._user = user
-        self._login_data['nick'] = user
-        self._login_data['password'] = password
-
-        login_header = self._default_header
-
-        self._session = requests.Session()
-        print("login get", self._url_login_request,)
-        request = self._get(self._url_login_request, login_header)
-
-        print("login post", self._url_login_post)
-        login_header['Referer'] = self._url_login_request
-        response = self._post(self._url_login_post,
-                              login_header, self._login_data, request)
-        logging.debug(user + ' logged in sucessfully to ' + self._url)
-        print(user + ' logged in sucessfully to ' + self._url)
-
-    def logout(self):
-        self._session.close()
-
     def _complete_url(self, url):
         if url[0]=="/":
             url_split = url.split("/")
@@ -139,12 +158,12 @@ class FSConnector:
           url_from_page=True: "/demo/finance/balancing"
         """
         self.url = self._complete_url(url)
-        print("get", self.url)
+        #print("get", self.url)
         self.response = self._get(self.url, self._default_header)
         decoded_content = self.response.content.decode('utf-8')
         page = bs(decoded_content, 'html.parser')    
         self.csrf_token=page.find("meta", attrs={"name":"csrf-token"})["content"]
-        print("csrf-token:", self.csrf_token)
+        #print("csrf-token:", self.csrf_token)
         return page
 
     def get_articles_CSV(self, supplier_id):
@@ -282,6 +301,8 @@ class FSConnector:
         return sum_net, sum_gross 
 
     def delivery_balance(self, begin_datetime):
+        if isinstance(begin_datetime, str):
+            begin_datetime = datetime.datetime.strptime(begin_datetime.split(" ")[0], "%d.%m.%Y") # '25.09.2024 16:30'
         suppliers, suspended = self.get_suppliers(
             deliveries=True, suspend_limit_days="use_saved")
         unpaid = 0
@@ -586,103 +607,121 @@ class FSConnector:
             articles["deposit"][articles["i"]] = deposit_sum
         return price_sum, deposit_sum, transport_fees, invoice
 
-    def export_orders(self, begin_date=None, per_page=20, producer_selected=[], producer_excluded=[],
-                      filename="", only_id=None, start_page=1):
+
+    def get_orders(self, begin_date=None, per_page=20, producer_selected=[], producer_excluded=[],
+                      only_id=None, start_page=1):
         format = "%d.%m.%Y %H:%M"
         if not begin_date is None:
             begin_datetime = datetime.datetime.strptime(
                 begin_date+" 00:00", format)
-        if len(filename) == 0:
-            filename = "orders-{date:%Y-%m-%d_%H:%M:%S}.csv".format(
-                date=datetime.datetime.now())
         warning_message = ""
         order_after_begin = True
         page_number = start_page
+        orders = {}
+        while order_after_begin:
+            # ... finance/balancing?page=2&per_page=20 ...
+            print("------------------- page %d ---------------" %
+                    page_number)
+            order_page = self.get_page(
+                "finance/balancing?page="+str(page_number)+"&per_page="+str(per_page))
+            page_number += 1
+            for order_tr in order_page.tbody.find_all('tr'):
+                order = {}
+                order_td = order_tr.find_all('td')
+
+                order["date"] = str(order_td[1].string)
+                order["datetime"] = datetime.datetime.strptime(order["date"], format)
+                if begin_date is None:
+                    order_after_begin = True
+                else:
+                    order_after_begin = order["datetime"] > begin_datetime
+                if not order_after_begin: continue
+
+                order["producer"] = order_td[0].a.string.strip()
+                if producer_selected and not order["producer"] in producer_selected: continue
+                if order["producer"] in producer_excluded: continue
+
+                order["url"] = order_td[0].a.get('href')
+                if order["url"] is None: continue
+
+                order["id"] = int(order["url"].split("=")[1])
+                if only_id and not order["id"] == only_id: continue
+
+                # "abgerechnet (...)": Bilanzsumme in Klammer nicht anzeigen weil falsch wenn Rechnung über mehrere Bestellungen
+                order["status"] = order_td[2].string.split("(")[0].strip() # beendet oder "abgerechnet (...)""
+                order["status-num"] = 1 if "abgerechnet" in order["status"] else 0
+                print("===", page_number, order["date"], order["producer"], order["status"])
+
+                price_sum, deposit_sum, transport_fees, invoice = self.get_order(
+                    url=order["url"])
+                order["sum"] = price_sum
+                order["deposit"] = deposit_sum
+                order["transport-fees"] = transport_fees
+                order["invoice-id"] = invoice
+
+                if invoice:
+                    d = self.get_invoice(invoice)
+                    invoice_number = d["Nummer"]
+                    
+                    if invoice_number is None:
+                        invoice_number = "--"
+                        warning_message += f"Rechnung {invoice} hat keine Rechnungsnummer.\n"
+                    invoice_date = d["Rechnungsdatum"]
+                    if invoice_date is None:
+                        invoice_date = "####-##-##"
+                        warning_message += f"Rechnung {invoice} hat kein Rechnungsdatum.\n"
+                        #raise Exception(f"Rechnung https://app.foodcoops.at/franckkistl/finance/invoices/{invoice} hat kein Datum! ")
+                    invoice_paid_date = d["Bezahlt am"]
+                    invoice_amount = "%.2f" % d["Betrag"]
+                    if invoice_paid_date is None:
+                        invoice_paid_date = ""
+                    order["invoice-number"] = invoice_number
+                    order["invoice-date"] = invoice_date
+                    order["invoice-paid-date"] = invoice_paid_date
+                    order["invoice-amount"] = invoice_amount
+                else:
+                    invoice_number = ""
+                    invoice_date = ""
+                    invoice_paid_date = ""
+                    invoice_amount = ""
+                 
+                if invoice_number:
+                    order["status-num"] += 2
+                    order["status"] += ", Rechnung angelegt"
+                if invoice_paid_date:
+                    order["status-num"] += 4 
+                    order["status"] += " und bezahlt"
+                orders[order["id"]] = order
+            if begin_date is None:
+                order_after_begin = False
+        print(warning_message)
+        return orders
+        
+
+
+    def export_orders(self, orders, filename=""):
+        if len(filename) == 0:
+            filename = "orders-{date:%Y-%m-%d_%H:%M:%S}.csv".format(
+                date=datetime.datetime.now())
         with open(filename, "w") as output_file:
             output_file.write(";".join(["Datum", "ID", "Lieferantin", "Status", "Summe exkl. Pfand", "Pfand", "Transportkosten",
                                         "Rechnung Nr.", "Rechnung Datum", "Rechnung Betrag", "Rechnung bezahlt am", "Status", "Rechnungs-ID"]) + "\n")
-            while order_after_begin:
-                # ... finance/balancing?page=2&per_page=20 ...
-                print("------------------- page %d ---------------" %
-                      page_number)
-                order_page = self.get_page(
-                    "finance/balancing?page="+str(page_number)+"&per_page="+str(per_page))
-                page_number += 1
-                for order_tr in order_page.tbody.find_all('tr'):
-                    order_td = order_tr.find_all('td')
-
-                    order_date = order_td[1].string
-                    order_datetime = datetime.datetime.strptime(
-                        order_date, format)
-                    if begin_date is None:
-                        order_after_begin = True
-                    else:
-                        order_after_begin = order_datetime > begin_datetime
-                    if not order_after_begin:
-                        continue
-
-                    order_producer_name = order_td[0].a.string.strip()
-                    if producer_selected and not order_producer_name in producer_selected: continue
-                    if order_producer_name in producer_excluded: continue
-
-                    order_href = order_td[0].a.get('href')
-                    if order_href is None: continue
-
-                    order_id = int(order_href.split("=")[1])
-                    if only_id and not order_id == only_id: continue
-
-                    # "abgerechnet (...)": Bilanzsummer in Klammer nicht anzeigen weil falsch wenn Rechnung über mehrere Bestellungen
-                    order_status = order_td[2].string.split("(")[0]
-                    order_status_num = 1 if "abgerechnet" in order_status else 0
-                    print("===", page_number, order_href, order_date,
-                          order_after_begin, order_producer_name, order_status)
-
-                    # if ((not order_href is None) and order_after_begin and
-                    #    (not producer_selected or order_producer_name in producer_selected) and
-                    #    (not order_producer_name in producer_excluded)):
-
-                    price_sum, deposit_sum, transport_fees, invoice = self.get_order(
-                        url=order_href)
-                    if invoice:
-                        d = self.get_invoice(invoice)
-                        invoice_number = d["Nummer"]
-                        if invoice_number is None:
-                            invoice_number = "--"
-                            warning_message += f"Rechnung {invoice} hat keine Rechnungsnummer.\n"
-                        invoice_date = d["Rechnungsdatum"]
-                        if invoice_date is None:
-                            invoice_date = "####-##-##"
-                            warning_message += f"Rechnung {invoice} hat kein Rechnungsdatum.\n"
-                            #raise Exception(f"Rechnung https://app.foodcoops.at/franckkistl/finance/invoices/{invoice} hat kein Datum! ")
-                        invoice_paid_date = d["Bezahlt am"]
-                        invoice_amount = "%.2f" % d["Betrag"]
-                        if invoice_paid_date is None:
-                            invoice_paid_date = ""
-                    else:
-                        invoice_number = ""
-                        invoice_date = ""
-                        invoice_paid_date = ""
-                        invoice_amount = ""
-                    order_status_num += 2 if invoice_number else 0
-                    order_status_num += 4 if invoice_paid_date else 0
+            for order_id,order in orders.items():
                     output_file.write(";".join([
-                        order_date,  # 0
+                        order["date"],  # 0
                         str(order_id),  # 1
-                        order_producer_name,  # 2
-                        order_status,  # 3
-                        "%.2f" % price_sum,  # 4
-                        "%.2f" % deposit_sum,  # 5
-                        "%.2f" % transport_fees,  # 6
-                        invoice_number,  # 7
-                        invoice_date,  # 8
-                        invoice_amount,  # 9
-                        invoice_paid_date,  # 10
-                        str(order_status_num),  # 11
-                        str(invoice), # 12
+                        order["producer"],  # 2
+                        order["status"],  # 3
+                        "%.2f" % order["sum"],  # 4
+                        "%.2f" % order["deposit"],  # 5
+                        "%.2f" % order["transport-fees"],  # 6
+                        order["invoice-number"],  # 7
+                        order["invoice-date"],  # 8
+                        order["invoice-amount"],  # 9
+                        order["invoice-paid-date"],  # 10
+                        str(order["status-num"]),  # 11
+                        str(order["invoice-id"]), # 12
                     ]) + "\n")
-                if begin_date is None:
-                    order_after_begin = False
-        print(warning_message)
         return filename
 
         # order status num:
@@ -864,9 +903,11 @@ class FSConnector:
 # ==== bank and ordergroup accounts =========================================================================================
 
 
-    def get_bank_account(self, bank_account_id, n=20):
-        page = self.get_page(
-            "finance/bank_accounts/"+str(bank_account_id)+"/bank_transactions?per_page="+str(n)) 
+    def get_bank_account(self, bank_account_id=None, n=20):
+        url = "finance/bank_accounts/"
+        if not bank_account_id is None:
+            url += str(bank_account_id)+"/bank_transactions"
+        page = self.get_page(url + "?per_page="+str(n)) 
 
         # <h1>Banktransaktionen für Bank XY (1.863,72 € )</h1>
         h1 = page.h1.string 
@@ -889,41 +930,147 @@ class FSConnector:
         #print(transactions)
         return credit, transactions
 
-    def foodcoop_balance(self, bank_credit: float, stock_cash_value):
-        # finance/ordergroups, order-balance.csv => account-balance.csv
-        if isinstance(bank_credit, str):
-            bank_credit = _float(bank_credit)
 
-        # ordergroups from https://app.foodcoops.at/franckkistl/finance/ordergroups
-        # https://app.foodcoops.at/franckkistl/finance/ordergroups?per_page=500
-        page = self.get_page("finance/ordergroups/?per_page=500")
-        # print(page)
+    def get_ordergroup_accounts(self):
+        url = "finance/ordergroups/?per_page=500"
+        print(url)
+        page = self.get_page(url)
         keys = []
         for th in page.table.thead.tr.find_all("th"):
-            # print(th.string)
             keys.append(th.string)
         # print(keys)
-        print("\n--- Mitglieder Guthaben Bilanz ------------------------------------------------------------------------")
-        ordergroups = []
-        member_credit_orders = 0
-        member_credit_membership_fee = 0
+        # 'Name', 'Kontakt', 'Guthaben Bestellungen', 'Guthaben Mitgliedsbeitrag', None
+
+        ordergroups = {}
         for tr in page.table.tbody.find_all("tr"):
             data = {}
-            for i, td in enumerate(tr.find_all("td")[:-1]):
-                if i in [2, 3]:
-                    data[keys[i]] = _float(td.get_text()[1:-4])
-                else:
+            for i, td in enumerate(tr.find_all("td")):
+                if i in [0,1]:
                     data[keys[i]] = td.get_text()
+                    #if i==0: print(data[keys[i]], end="")
+                elif i in [2,3]: 
+                    data[keys[i]] = _float(td.get_text()[1:-4])
+                elif i==4:
+                    for a in td.find_all("a"):
+                        href = a.get("href")
+                        data[a.get_text()] = href
+                    id = int(href.split("/")[4])
             data["Guthaben gesamt"] = data["Guthaben Bestellungen"] + data["Guthaben Mitgliedsbeitrag"]
-            #print(data)
-            #{'Name': 'X Y', 'Kontakt': ' (X Y)', 'Guthaben Bestellungen': 30.0, 'Guthaben Mitgliedsbeitrag': 0.0}
+            ordergroups[id] = data
+        return ordergroups
+
+
+    def get_transactions(self, n=500):
+        n_per_page = n
+        n_pages = 1
+        if n>500:
+            n_per_page = 500
+            n_pages = ceil(n / 500)
+        transactions = []
+        for i_page in range(1,n_pages+1):
+            url = "finance/transactions/?page="+str(i_page)+"&per_page="+str(n_per_page)
+            print(url) 
+            # https://app.foodcoops.at/franckkistl/finance/transactions?page=2&per_page=20
+            page = self.get_page(url)
+            keys = []
+            for th in page.table.thead.tr.find_all("th"):
+                keys.append(th.get_text().replace("\n",""))
+            # print (keys)
+            # ['Datum', 'Bestellgruppe', 'Eingetragen von', 'Kontotransaktionstyp', 'Notiz', 
+            #  'Guthaben Bestellungen', 'Guthaben Mitgliedsbeitrag']
+            col = {c: i for i,c in enumerate(keys)}
+
+
+            for tr in page.table.tbody.find_all("tr"):
+                td = tr.find_all("td")
+                data = {}
+                for i, td in enumerate(tr.find_all("td")):
+                    key = keys[i]
+                    if key in ['Datum', 'Bestellgruppe', 'Eingetragen von', 'Kontotransaktionstyp', 'Notiz']:
+                        data[key] = td.get_text().strip() 
+                        if key=='Bestellgruppe':
+                            href = td.a.get("href")
+                            # /franckkistl/finance/ordergroups/19/financial_transactions
+                            # /franckkistl/finance/foodcoop/financial_transactions
+                            if "ordergroups" in href:
+                                data["Id"] = int(href.split("/")[4])
+                            else:
+                                data["Id"] = -1 # foodcoop
+                    else:
+                        data[key] = _float(td.get_text())     
+                transactions.append(data)
+        return transactions
+
+    def order_balance(self, orders, ignore_producers=["Lager", "Leergut Rückgabe", "Spendenbox"]):
+        print("\n--- Bestellbilanz --------------------------------------------------------------------")
+        imbalance_total = 0
+        invoices = []
+        for id, order in orders.items():
+            order_status = order["status-num"]
+            # +1 abgerechnet
+            # +2 Rechnung angelegt
+            # +4 Rechnung bezahlt
+
+            # 1: abgerechnet, aber keine Rechnung, oder Rechnung noch nicht angelegt und bezahlt
+            # 3: abgerechnet, Rechnung angelegt aber noch nicht  bezahlt
+            # 6: nicht abgerechnet, aber Rechnung schon bezahlt
+            
+            status = ""
+            if order["producer"] in ignore_producers:
+                imbalance = 0
+            elif order_status == 1 or order_status == 3:
+                status = "abgerechnet, Rechnung offen/keine Rechnung."
+                if "price" in order:
+                    imbalance = -float(order["price"])
+                else:
+                    imbalance = 0
+                    #print(f"Order {id} {order['producer']}: no price!")
+                    status += " Keine Bestellsumme gefunden - leere Bestellung?"
+                # print(("%5d " % j) + data["order_date"] + (" %8.2f " % imbalance) +
+                #     data["order_status_num"] + " " + data["order_producer_name"]+" inv.id: "+str(type(data["invoice_id"]))+" "+data["invoice_id"]+" "+("true" if data["invoice_id"] else "false")+" nr: "+data["invoice_number"]+": "+status)
+            elif order_status == 6:
+                imbalance = float(order["invoice-amount"])
+                status = "nicht abgerechnet, Rechnung bezahlt"
+            else:
+                imbalance = 0
+            
+            invoice_id = order["invoice-id"]
+            if invoice_id:
+                if invoice_id in invoices: # Rechnung kam schon bei einer anderen Bestellung vor
+                    imbalance = 0
+                    status = "Rechnung schon berücksichtigt"
+                else:
+                    invoices.append(invoice_id)
+            if not imbalance==0 or "?" in status: # von mehreren Bestellungen einer Rechnung nur die erste anzeigen
+                
+                print(("%6d " % id) + order["date"] + (" %8.2f " % imbalance) +
+                    "%d" % order["status-num"] + " " + order["producer"]+" "+order.get("invoice-number", "--keine Rechnung--")+": "+status)
+            self.earliest_orderdate = order["date"]
+            imbalance_total += imbalance
+        print("-------------------------------------------------------------------------------------")
+        print("                      " + (" %8.2f " % imbalance_total))
+        print("")       
+        return imbalance_total
+
+
+
+    def foodcoop_balance(self, orders):
+        
+        # --- bank_credit
+        bank_credit, transactions = self.get_bank_account()
+
+        # --- ordergoup balance 
+        print("\n--- Mitglieder Guthaben Bilanz ------------------------------------------------------------------------")
+        ordergroups = self.get_ordergroup_accounts()
+        member_credit_orders = 0
+        member_credit_membership_fee = 0
+        for data in ordergroups:
             print("%-30s " % data["Name"], end="")
             for k in ["Guthaben Bestellungen", "Guthaben Mitgliedsbeitrag", "Guthaben gesamt"]:
                 x = data[k]
                 if x<0: print("\x1B[38;2;255;0;0m", end="") # Text auf rot stellen, https://www.baeldung.com/linux/formatting-text-in-terminals 
                 print("%9.2f " % x, end="\x1B[m")  # reset text format
             print("")
-            ordergroups.append(data)
             member_credit_orders += data["Guthaben Bestellungen"]
             member_credit_membership_fee += data["Guthaben Mitgliedsbeitrag"]
         member_credit_total = member_credit_orders + member_credit_membership_fee
@@ -934,24 +1081,39 @@ class FSConnector:
         print("Bank Guthaben: %.2f €, abzüglich Mitglieder Guthaben: %.2f € " %
               (bank_credit, bank_credit - member_credit_total))
 
-        with open("order-balance.csv", "r") as order_balance_file:
-            # Daten der letzen Zeile auswerten
-            data = order_balance_file.read().splitlines()[-1].split(";")
-            order_imbalance_date = data[0]
-            order_imbalance = float(data[1])
-        foodcoop_credit = bank_credit - member_credit_total + \
-            order_imbalance + stock_cash_value
+        # --- order balance
+        order_imbalance = self.order_balance(orders)
+
+        # --- stock balance
+        articles, stock_cash_value = self.get_stock_articles()
+        unpaid_stock_deliveries, stock_deliveries_without_invoice, suppliers = \
+            self.delivery_balance(self.earliest_orderdate)
+        if stock_deliveries_without_invoice > 0:
+            print(f"*** Bilanz stimmt möglicherweise nicht, weil {stock_deliveries_without_invoice} Rechnung(en) zu Lieferungen fehlen!")
+        print(
+            f"Lagerartikel Wert: {stock_cash_value:.2f} €, " +
+            f"abz. unbez. Rechnungen: {stock_cash_value - unpaid_stock_deliveries:.2f} €")
+        print("---------------------------------------------------\n")
+        stock_cash_value -= unpaid_stock_deliveries
+
+
+        
+        
+        # --- overall balance
+        foodcoop_credit = bank_credit - member_credit_total + order_imbalance + stock_cash_value
         print("Abrechnungen Guthaben Verein: %.2f €, Lager: %.2f €, Gesamtvermögen Verein: %.2f €" % (
             order_imbalance, stock_cash_value, foodcoop_credit))
+        
         with open("account-balance.csv", "a") as output_file:
-            s = ";".join(["{date:%Y-%m-%d %H:%M:%S}".format(date=datetime.datetime.now()),
+            now = "{date:%Y-%m-%d %H:%M:%S}".format(date=datetime.datetime.now())
+            s = ";".join([now,
                           "%.2f" % member_credit_orders,
                           "%.2f" % member_credit_membership_fee,
                           "%.2f" % member_credit_total,
                           "%.2f" % bank_credit,
                           "%.2f" % (bank_credit -
                                     member_credit_total),
-                          order_imbalance_date,
+                          now,
                           "%.2f" % order_imbalance,
                           "%.2f" % stock_cash_value,
                           "%.2f" % foodcoop_credit
@@ -960,7 +1122,7 @@ class FSConnector:
         print("\nDiese Zeile in die Google-Tabelle kopieren:")
         print(s.replace(".", ",").replace(";", "\t"))
 
-# ==== user accounts =========================================================================================
+# ==== user accounts, ordergroups =========================================================================================
 
     def export_users(self):
         page = self.get_page("admin/users?per_page=500")
@@ -994,3 +1156,47 @@ class FSConnector:
         for user in users:
             print(";".join(user.values()))
         return users
+    
+    
+    def get_ordergroups_csv(self):
+        url = self._url + "admin/ordergroups.csv"
+        print(url)
+        response = self._get(url, self._default_header)
+        decoded_content = response.content.decode('latin-1')
+        lines = decoded_content.splitlines()
+        keys = lines[0].split(";")
+        # ['Id', 'Name', 'Beschreibung', 'Kontostand', 'Created on', 'Kontaktperson', 'Telefon', 'Adresse', 
+        #  'Break start', 'Break end', 'Zuletzt aktiv', 'Zuletzt bestellt', 'Mitgliedsbeitrag']
+        n = len(keys)
+        data = {}
+        i_next = 0
+        for i,line in enumerate(lines[1:]):
+            items = line.split(";")
+            if i_next>i: continue
+            i_next = i+1
+            while len(items)<n: # linebreaks in text field!
+                line += ' ' + lines[i_next+1] # +1: account for header line
+                i_next += 1
+                items = line.split(";")
+            d = dict(zip(keys,items))
+            key = 'Id' ;         d[key] = int(d[key])
+            key = 'Kontostand' ; d[key] = float(d[key])
+            key = 'Mitgliedsbeitrag' ; d[key] = int(d[key].replace(" ","")) if d[key] and d[key]!='""' else 0
+            #key = 'Id' ; d[key] = int(d[key])
+            data[d["Id"]] = d.copy()
+        return data
+
+
+
+
+if __name__ == "__main__":
+    
+    import foodsoft_login_data_demo as foodsoft_login
+    
+    foodsoft = FSConnector(login=foodsoft_login)
+    
+    members = foodsoft.get_ordergroups_csv()
+    for id,member in members.items():
+        print(id,member["Name"], member["Created on"])
+
+    foodsoft.logout()
