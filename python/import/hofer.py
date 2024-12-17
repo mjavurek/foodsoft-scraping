@@ -1,4 +1,4 @@
-filename='Downloads/Angebotsliste 2024-08 LIEFERUNG OÖ.txt'
+filename='Downloads/Angebotsliste 2024-10 LIEFERUNG OÖ.txt'
 # pdftotext -layout Angebotsliste\ 2024-08\ LIEFERUNG\ OÖ.pdf
 
 categories = { # Foodsoft-Kategorien aus Überschriften der Liste
@@ -19,8 +19,9 @@ category_exceptions = { # Ausnahmen für Kategorien: Ausnahmeregel nur anwenden,
 exclude = ["Karton", "pfand"] # Zeilen, die € Zeichen enthalten, aber keine Artikel sind
 exclude_small_cat = ["Sekt und Prosecco", "Säfte, Getränke"] # kleine Gebinde in diesen Kategorien ausschließen
 
-no_deposit_categories = ["Sekt und Prosecco"] # kein Pfand in diesen Kategorien
-no_deposit_names = ["Origin"] # kein Pfand wenn einer dieser Begriffe in der Artikelbezeichnung vorkommt
+producer_deposits = {1.0: 0.10} # Produzent*innen-Pfand 10 Cent auf 1 Liter Flaschen
+no_deposit_categories = ["Sekt und Prosecco"] # kein FC Pfand in diesen Kategorien
+no_deposit_names = ["Origin"] # kein FC Pfand wenn einer dieser Begriffe in der Artikelbezeichnung vorkommt
 
 replace_in_line = {
     "1l":    "1 l",
@@ -38,6 +39,8 @@ shortcuts = { # Abkürzen falls Artikelbezeichnung sonst zu lange wäre (> max_n
 foodsoft_columns = "Status 	Bestellnummer 	Name 	Notiz 	Produzent 	Herkunft 	Einheit 	Nettopreis 	MwSt 	Pfand 	Gebindegröße 	(geschützt1) 	(geschützt2) 	Kategorie".split("\t")
 #for c in foodsoft_columns: # generiere Python-Code für dictionary 
 #    print(f'        "{c.strip()}":  article[""],')
+
+fc_discount = 0.1 # 10 % Rabatt für FC
 
 def replace_multiple(string, replace_items, separator=""):
     if isinstance(replace_items, list):
@@ -65,9 +68,9 @@ for line in lines:
     is_heading = False
     for key,cat in categories.items():
     	if key in line:
-    	    category = cat
-    	    is_heading = True
-    	    break
+            category = cat
+            is_heading = True
+            break
     if is_heading: continue
     this_category = category
     for key,cat in category_exceptions.items():
@@ -104,7 +107,8 @@ for line in lines:
         is_item_in_str(no_deposit_names, article["name"])): 
         article["deposit"] = 0
         
-    article["price-foodcoop"] = article["price"] * 0.9 # 10 % discount for foodcoop
+    producer_deposit = producer_deposits.get(article["volume"], 0)
+    article["price-foodcoop"] = (article["price"] - producer_deposit) * (1 - fc_discount)
     
     if article["volume"]<0.4 and this_category in exclude_small_cat: 
         excluded_articles.append(article)
@@ -125,8 +129,10 @@ for line in lines:
           "| %5.2f €" % article["price"], "=>", 
           "%5.2f €" % (article["price-foodcoop"]),
           "%5.2f €" % (article["price-foodcoop"] + article["deposit"]),
-          article["volume"],"L", article["description"]) 
-
+          article["volume"],"L", 
+          "Prd.Pfand: %4.2f €" %  producer_deposit if producer_deposit else "",
+          article["description"]) 
+ 
     # prepare import table for foodsoft
     foodsoft_article = {
         "Status":  "",
