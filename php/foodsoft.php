@@ -10,11 +10,24 @@ class Foodcoop
   public $name;
   public $real_name;
 
-  public function __construct($host, $name)
+  public function __construct($host, $name = "")
   {
-    $this->host = $host; # "https://app.foodcoops.at"
-    $this->name = $name; # "franckkistl"
-    $this->real_name = ucwords($name); #  "Franckkistl"
+    if ($name) {
+      $this->host = $host; # "https://app.foodcoops.at"
+      $this->name = $name; # "franckkistl"
+    } else {
+      $parts = explode("/", $host);
+      $n = count($parts);
+      if ($n != 4) {
+        print "<pre>";
+        print "invalid url ($n parts): $host\n";
+        print_r($parts);
+        exit;
+      }
+      $this->name = $parts[$n - 1];
+      $this->host = substr($host, 0, strlen($host) - strlen($this->name) - 1);
+    }
+    $this->real_name = ucwords($this->name); #  "Franckkistl"
   }
 
   public function set_real_name($name)
@@ -66,13 +79,18 @@ class Foodsoft
   private $login_url, $login_action_url;
   private $is_localhost, $do_post;
   private $channel;
+  public $download, $download_total;
   private $url, $page, $html, $csfr_token;
   private $foodsoft_user, $foodcoop_name;
+  private $followlocation;
   public $orders;
+  public $financial_link_id;
+  public $financial_transaction_types;
+  public $financial_transaction_classes;
 
   private $debug = FALSE;
 
-  public function __construct($foodsoft_user) #$host, $foodcoop, $user, $password)
+  public function __construct($foodsoft_user, $followlocation = 0)
   {
     $this->foodsoft_user = $foodsoft_user;
     $this->foodcoop_name = $foodsoft_user->foodcoop->name;
@@ -82,6 +100,10 @@ class Foodsoft
     $this->login_action_url = $this->fs_fc_url . "/sessions"; // submit $fs_urlurl from the login form
     $this->is_localhost = strpos($_SERVER['HTTP_HOST'], "localhost") === 0;
     $this->do_post = !$this->is_localhost;
+    $this->followlocation = $followlocation;
+    $this->csfr_token = NULL;
+    $this->financial_link_id = NULL;
+    $this->download_total = 0;
     if (!$this->login($foodsoft_user->username, $foodsoft_user->password)) {
       $this->close();
       print "<p>";
@@ -141,12 +163,17 @@ class Foodsoft
 
   public function url($url): string
   {
-    if (strpos($url, $this->foodcoop_name) === false) {
+    #print "url in: [$url]\n";
+    if (strpos($url, "/" . $this->foodcoop_name) === false) {
+      if ($url[0] != '/')
+        $url = "/" . $url;
       return $this->fc_url($url);
     }
     if (strpos($url, $this->fs_url) === false) {
+      #print "url does not contain [$this->fs_url], out: [" . $this->fs_url($url) . "]\n";
       return $this->fs_url($url);
     }
+    #print "url out: [$url]\n";
     return $url;
   }
 
@@ -166,8 +193,12 @@ class Foodsoft
 
   private function curl_exec()
   {
-    return curl_exec($this->channel);
+    $result = curl_exec($this->channel);
+    $this->download = strlen($result);
+    $this->download_total += $this->download;
+    return $result;
   }
+
 
   private function login($user, $password)
   {
@@ -182,7 +213,7 @@ class Foodsoft
     $this->curl_setopt(CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 5.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/35.0.2309.372 Safari/537.36');
     $this->curl_setopt(CURLOPT_HTTPHEADER, $this->header());
     $this->curl_setopt(CURLOPT_RETURNTRANSFER, 1);
-    $this->curl_setopt(CURLOPT_FOLLOWLOCATION, 0);
+    $this->curl_setopt(CURLOPT_FOLLOWLOCATION, $this->followlocation);
     $this->curl_setopt(CURLOPT_SSL_VERIFYHOST, false);
     $this->curl_setopt(CURLOPT_SSL_VERIFYPEER, false);
     $this->curl_setopt(CURLOPT_COOKIEJAR, realpath('./cookie.txt'));
@@ -194,6 +225,7 @@ class Foodsoft
       $this->channel = NULL;
       return FALSE;
     }
+    // $this->set_download(strlen($page));
 
     /* ...
     <input type="hidden" 
@@ -201,15 +233,27 @@ class Foodsoft
       value="tDVoz6jVZsVPULTJiVFr6fiolcW-GbJJFCUwTrmT2GvqrF6RR-DKhmrltMQaHqx9__geuOfCHvzWQIcHCgF3jg" 
       autocomplete="off" />
     ... */
-    $loginFields["authenticity_token"] = str_get_html($page)->find('input[name=authenticity_token]', 0)->value;
+    $token = str_get_html($page)->find('input[name=authenticity_token]', 0);
+    if (!$token) {
+      print "Konnte Token nicht finden auf $this->login_url";
+      exit;
+    }
+    $token = $token->value;
     //print "token: ".$loginFields["authenticity_token"];
+    $loginFields["authenticity_token"] = $token;
+    # $this->csfr_token = $token;
 
     $this->curl_setopt(CURLOPT_POST, 1);
     $this->curl_setopt(CURLOPT_POSTFIELDS, http_build_query($loginFields));
     $this->curl_setopt(CURLOPT_URL, $this->login_action_url);
     $this->curl_setopt(CURLOPT_REFERER, $this->login_url);
     $this->page = $this->curl_exec();
-    return strpos($this->page, "redirected") !== FALSE;
+    #print "LOGIN: " . $this->page . "\n";
+    $success = strpos($this->page, "Invalid email address or password") === FALSE;
+    if ($this->followlocation) {
+      $this->get_html();
+    }
+    return $success;
   }
 
   public function has_connection()
@@ -217,38 +261,215 @@ class Foodsoft
     return $this->channel !== NULL;
   }
 
-  function get_page($url): string
+  function get_page($url = NULL)
   {
-    $this->url = $url;
-    curl_setopt($this->channel, CURLOPT_URL, $url);
-    curl_setopt($this->channel, CURLOPT_POST, 0);
-    $this->page = $this->curl_exec();
+    if ($url) {
+      $this->url = $this->url($url);
+      #print "get_page url: [" . $this->url . "]<br>";
+      $this->curl_setopt(CURLOPT_URL, $this->url);
+      $this->curl_setopt(CURLOPT_POST, 0);
+      $this->page = $this->curl_exec();
+      #print $this->page . " " . strpos($this->page, "redirected");
+      if (strpos($this->page, "redirected") !== FALSE) {
+        $this->page = NULL;
+      }
+    }
     return $this->page;
   }
 
-  function get_html($url)
+  function get_html($url = NULL)
   {
-    $this->html = str_get_html($this->get_page($url));
+    if ($url) {
+      $this->get_page($url);
+    }
+    $this->html = str_get_html($this->page);
     # print "<pre>" . $url . "\n" . $this->page . "</pre>";
-    $this->csfr_token = $this->html->find("meta[name=csrf-token]", 0)->content;
+    if ($this->html === FALSE) {
+      # print "*** get_html: failed to get from [" . $url . "]";
+    } else {
+      $this->csfr_token = $this->html->find("meta[name=csrf-token]", 0)->content;
+    }
     return $this->html;
   }
 
-
-
-  function post($url, $data)
+  function form_transmit_csfr_token()
   {
-    $this->curl_setopt(CURLOPT_URL, $url);
-    $this->curl_setopt(CURLOPT_POST, 1);
-    $this->curl_setopt(CURLOPT_POSTFIELDS, http_build_query($data));
-    $this->curl_setopt(CURLOPT_REFERER, $this->url);
-    $this->curl_setopt(
-      CURLOPT_HTTPHEADER,
-      $this->header(array("X-CSRF-Token" => $this->csfr_token))
-    );
-    if ($this->do_post) {
-      $this->curl_exec();
+    print "<input type='hidden' name'csfr_token' value= '" . $this->csfr_token . "'>\n";
+  }
+
+  function set_csfr_token($token = NULL)
+  {
+    global $_POST;
+    if (!$token) {
+      $token = $_POST["csfr_token"];
     }
+    $this->csfr_token = $token;
+  }
+
+  function post($url, $data, $authenticity_token = FALSE)
+  {
+    if ($this->do_post) {
+      $this->curl_setopt(CURLOPT_URL, $url);
+      $this->curl_setopt(CURLOPT_POST, 1);
+      if (!$this->csfr_token) {
+        throw new Exception('post(): Kein CSFR Token vorhanden!');
+      }
+      if ($authenticity_token) {
+        $data["authenticity_token"] = $this->csfr_token;
+        # print "POST authenticity_token: " . $this->csfr_token . "\n";
+      } else {
+        $this->curl_setopt(
+          CURLOPT_HTTPHEADER,
+          $this->header(array("X-CSRF-Token" => $this->csfr_token))
+        );
+      }
+      # print_r($data);
+      $query_data = http_build_query($data);
+      # print $query_data . "\n";
+      $query_data = str_replace("%2Aempty%2A", "", $query_data);
+      # replace "*empty*" by ""
+      # print urldecode($query_data) . "\n";
+      $this->curl_setopt(CURLOPT_POSTFIELDS, $query_data);
+      $this->curl_setopt(CURLOPT_REFERER, $this->url);
+
+      return $this->curl_exec();
+    } else {
+      print "POST inactive. Data not sent to $url:\n";
+      print "csfr-token: [$this->csfr_token]\n";
+      print_r($data);
+      return FALSE;
+    }
+  }
+
+  function financial_link_create()
+  {
+    if (!$this->followlocation) {
+      throw new Exception('create_financial_link(): followlocation == 0!');
+    }
+    $this->page = $this->post($this->url("finance/links"), ["_method" => "post"], TRUE);
+    # print "page: " . $this->url("finance/links") . $this->page;
+    $this->get_html();
+    $h1 = $this->html->find("h1", 0)->plaintext;
+    $id = explode(" ", $h1)[1];
+    $this->financial_link_id = $id;
+    return $id;
+  }
+
+  function get_financial_link($id)
+  {
+    $targets = ["Kontotransaktion" => [], "Rechnung" => [], "Banktransaktion" => []];
+    $html = $this->get_html($this->url("finance/links/$id"));
+    foreach ($html->find("table tbody tr") as $tr) {
+      $td = $tr->find("td");
+      $type = $td[1]->plaintext;
+      $targets[$type][] = [
+        "url" => current($td)->find("a", 0)->href,
+        "date" => current($td)->plaintext,
+        "type" => next($td)->plaintext,
+        "description" => next($td)->plaintext,
+        "amount" => loc_floatval(next($td)->plaintext),
+        "url2" => $url = next($td)->find("a", 0)->href,
+        "id" => explode("/", $url)[6],
+        "link-id" => $id
+      ];
+    }
+    return $targets;
+  }
+
+  function financial_link_add_invoice($invoice_id)
+  {
+    $this->page = $this->post(
+      $this->url("finance/links/$this->financial_link_id/invoices/$invoice_id"),
+      ["_method" => "put"],
+      TRUE
+    );
+  }
+
+  function financial_link_create_transaction($amount, $financial_transaction_type_id, $ordergroup_id, $note, $link_id = null)
+  {
+    if ($link_id) {
+      $this->financial_link_id = $link_id;
+    }
+    $data = [
+      "financial_transaction[financial_transaction_type_id]" => $financial_transaction_type_id,
+      "financial_transaction[amount]" => $amount,
+      "financial_transaction[ordergroup_id]" => $ordergroup_id,
+      "financial_transaction[note]" => $note
+    ];
+    $this->page = $this->post(
+      $this->url("/finance/links/$this->financial_link_id/create_financial_transaction"),
+      $data,
+      TRUE
+    );
+    return $data;
+  }
+
+  function financial_link_add_transaction($transaction_id)
+  {
+    // http://localhost:3000/f/finance/links/26/financial_transactions/49
+    $this->page = $this->post(
+      $this->url("/finance/links/$this->financial_link_id/financial_transactions/$transaction_id"),
+      ["_method" => "put"],
+      TRUE
+    );
+  }
+
+  function financial_transaction_foodcoop($amount, $financial_transaction_type_id, $note)
+  {
+    // {
+    // 	"utf8": "✓",
+    // 	"authenticity_token": "5R5qNR+XV3rqXR5gT/lcrXUIf751Z+Igw/K7oWloduIqp4iVC10lNOfDdbf/Ft0Q1pVouE8I5xzbCY2JB1iwLw==",
+    // 	"financial_transaction[ordergroup_id]": "",
+    // 	"financial_transaction[financial_transaction_type_id]": [
+    // 		"",
+    // 		"3"
+    // 	],
+    // 	"financial_transaction[amount]": "4.56",
+    // 	"financial_transaction[note]": "test+mb",
+    // 	"commit": "Kontotransaktion+erstellen"
+    // }
+
+    $data = [
+      "financial_transaction[financial_transaction_type_id]" => $financial_transaction_type_id,
+      #    ["*empty*", $financial_transaction_type_id], -- imitiert Foodosoft, funktioniert aber nicht.
+      "financial_transaction[amount]" => $amount,
+      #"financial_transaction[ordergroup_id]" => "",
+      "financial_transaction[note]" => $note
+    ];
+    $this->page = $this->post(
+      $this->url("/finance/foodcoop/financial_transactions"),
+      $data,
+      TRUE
+    );
+    $html = $this->get_html();
+    $id = explode("/", $html->find("td[class=actions] a", 0)->href)[4];
+    # /f/finance/transactions/46
+    return $id;
+  }
+
+  function get_financial_transaction_types()
+  {
+    $html = $this->get_html("admin/finances");
+    $types = [];
+    $classes = [];
+    foreach ($html->find("div[id=transaction_types_table] table tbody tr") as $tr) {
+      $td = $tr->find("td");
+      $name = $td[0]->plaintext;
+      $href = $td[1]->find("a", 0)->href;
+      # /franckkistl/admin/financial_transaction_classes/1/edit
+      # /franckkistl/admin/financial_transaction_types/1/edit
+      $href = explode("/", $href);
+      $class_or_type = $href[3];
+      $id = $href[4];
+      if ($class_or_type == "financial_transaction_classes") {
+        $classes[$id] = $name;
+      } elseif ($class_or_type == "financial_transaction_types") {
+        $types[$id] = $name;
+      }
+    }
+    $this->financial_transaction_types = $types;
+    $this->financial_transaction_classes = $classes;
+    return $types;
   }
 
   function get_user_name($id)
@@ -263,14 +484,21 @@ class Foodsoft
   // for current user
   {
     $html = $this->get_html($this->fc_url("/home/ordergroup"));
-    if (strlen($html) == 0 || strpos($html, "redirected") > 0)
-      return FALSE;
-    return array(
-      "name" => $html->find("a", 0)->plaintext,
-      "ordergroup" => $html->find("h2", 0)->plaintext,
-      "total_credit" => $html->find("p")[0]->plaintext,
-      "available_credit" => $html->find("p")[1]->plaintext,
-    );
+    # print "get html: $html";
+    if (strlen($html) == 0 || strpos($html, "redirected") > 0) {
+      // keine Bestellgruppe?
+      $html = $this->get_html($this->fc_url(""));
+      $name = $html->find("a[class=dropdown-toggle]", 0)->plaintext;
+      return ["name" => $name, "ordergroup" => "keine", "ordergroup-id" => 0];
+    } else {
+      return array(
+        "name" => $html->find("a", 0)->plaintext,
+        "ordergroup" => $html->find("h2", 0)->plaintext,
+        "ordergroup-id" => explode("=", $html->find("div[class=well] a", 0)->href)[1],
+        "total_credit" => $html->find("p")[0]->plaintext,
+        "available_credit" => $html->find("p")[1]->plaintext,
+      );
+    }
   }
 
   function get_ordergroup($user_id)
@@ -338,7 +566,9 @@ class Foodsoft
         foreach ($members as $i => $member) {
           $members[$i] = trim($member);
         }
-        $ordergroups[] = array(
+        $id = explode("=", end($td)->find("a", 0)->href)[1];
+        # https://app.foodcoops.at/franckkistl/messages/new?message[group_id]=14
+        $ordergroups[$id] = array(
           "name" => $td[0]->plaintext,
           "members" => $members,
         );
@@ -358,7 +588,33 @@ class Foodsoft
   }
 
 
-
+  function get_ordergroup_finance()
+  {
+    $html = $this->get_html($this->fc_url("/finance/ordergroups?per_page=500"));
+    $headers = array();
+    foreach ($html->find("table thead tr th") as $th) {
+      $headers[] = $th->plaintext;
+    }
+    # print_r($headers);
+    $ordergroups = array();
+    foreach ($html->find("table tbody tr") as $tr) {
+      $td = $tr->find("td");
+      # 0 Name 	1 Kontakt 	2 Guthaben Bestellungen 	3 Guthaben Mitgliedsbeitrag 	4 ...
+      # Afro Ladys 	(Marie-Hedwige (Toutou)) 	328,85 €  	10,00 €  	Neue Transaktion Kontoauszug
+      $n = count($td);
+      $ordergroup = array(
+        "name" => $td[0]->plaintext,
+        "contact" => $td[1]->plaintext,
+        "id" => explode("/", end($td)->find("a", 0)->href)[4],
+        "credits" => array()
+      );
+      for ($i = 2; $i < $n - 1; $i++) {
+        $ordergroup["credits"][$headers[$i]] = loc_floatval($td[$i]->plaintext);
+      }
+      $ordergroups[$ordergroup["id"]] = $ordergroup;
+    }
+    return $ordergroups;
+  }
 
 
 
@@ -389,10 +645,24 @@ class Foodsoft
     $orders = array();
 
     # --- beendete Bestellungen -----------------
-    $html_order = $html->find("h2", 1)->parent()->parent()->next_sibling(); # h2: Beendet -> td -> tr -> next tr
-    $i = 0;
-    while ($html_order) {
-      $td = $html_order->find("td");
+    # $html_order = $html->find("h2", 1)->parent()->parent()->next_sibling(); 
+    # h2: Beendet -> td -> tr -> next tr
+    # $i = 0;
+    # while ($html_order)
+
+    $h2 = $html->find("h2", 0)->plaintext;
+    $skip_open_orders = $h2 == "Laufend";
+    # print "<pre>";
+
+    foreach ($html->find("table", 0)->find("tbody tr") as $tr) {
+      # $td = $html_order->find("td");
+      $td = $tr->find("td");
+      if ($skip_open_orders) {
+        $skip_open_orders = count($td) == 6;
+        continue;
+      }
+      # print count($td) . " " . $td->string . "\n";
+
       $order = array(
         "producer" => $td[0]->plaintext,
         "pickup" => $td[1]->plaintext,
@@ -414,9 +684,9 @@ class Foodsoft
         $orders[$order[$key]] = $order;
       }
 
-      $html_order = $html_order->next_sibling();
-      if ($i++ > 500)
-        break; # this should never happen, because after last table entry, $html_order = null
+      // $html_order = $html_order->next_sibling();
+      // if ($i++ > 500)
+      //   break; # this should never happen, because after last table entry, $html_order = null
     }
 
     # --- abgerechnete Bestellungen -----------------------
@@ -550,7 +820,7 @@ class Foodsoft
     // like e.g. /franckkistl/finance/balancing/new?order_id=5533
     // returns: array("url" => $url, "page" => $page, "articles" => $articles, ...)
     $url = $this->url($url);
-    #print "url: $url\n";
+    # print "url: $url\n";
     $html = $this->get_html($url); // Create a DOM object from a string
     if (!$html) {
       return false;
@@ -588,14 +858,17 @@ class Foodsoft
       $td = $tr->find("td");
       $received = explode("×", $td[2]->plaintext); #  "3" oder "1 × 4"
       if (count($received) == 2) {
-        $received = floatval($received[0]) * floatval($received[1]); #  z.B. 	1 × 4
+        $unit_quantity = floatval($received[1]);
+        $received = floatval($received[0]) * $unit_quantity; #  z.B. 	1 × 4
       } else {
+        $unit_quantity = 1;
         $received = floatval($received[0]);
       }
       $article = array(
         "name" => $td[0]->plaintext,
         "item-number" => $td[1]->plaintext, // Artikelnummer
         "received-total" => $received, # floatval($td[2]->plaintext), // Anzahl der bestellten Artikel ohne Lager-Bestellungen!
+        "unit-quantity" => $unit_quantity,
         "unit" => $td[3]->plaintext,
         "price-excl-tax" => loc_floatval(explode("/", $td[4]->plaintext)[0]),
         "price-incl-tax" => loc_floatval(explode("/", $td[5]->plaintext)[0]),
@@ -642,10 +915,12 @@ class Foodsoft
       //                accept-charset="UTF-8" data-remote="true" method="post">
       //             <input type="hidden" name="_method" value="patch" autocomplete="off" />
       //             <div class="delta-input input-prepend input-append">
-      //                 <button name="delta" type="button" value="-1" data-decrement="r_2321601" tabindex="-1" class="btn"><i class="icon icon-minus"></i></button>
+      //                 <button name="delta" type="button" value="-1" data-decrement="r_2321601" tabindex="-1" class="btn">
+      //                      <i class="icon icon-minus"></i></button>
       //                 <input class="delta optional input-nano" data-min="0" data-delta="1" 
       //                        id="r_2321601" value="1" type="text" autocomplete="off" name="group_order_article[result]" />
-      //                 <button name="delta" type="button" value="1" data-increment="r_2321601" tabindex="-1" class="btn"><i class="icon icon-plus"></i></button>
+      //                 <button name="delta" type="button" value="1" data-increment="r_2321601" tabindex="-1" class="btn">
+      //                     <i class="icon icon-plus"></i></button>
       //             </div>
       //         </form></td>
       //     3 <td class='numeric'>4,95 € </td>
@@ -740,6 +1015,8 @@ class Foodsoft
   {
     // update the totally received units of an article in an order
     $url = $this->fs_url($article["edit-url"]);
+    # https://app.foodcoops.at/franckkistl/orders/5692/order_articles/191981/edit
+    $received /= $article["unit-quantity"];
     if ($this->is_localhost)
       printf(
         "POST %s %s order_article[units_received]=%.2f\n",
@@ -752,21 +1029,23 @@ class Foodsoft
       array(
         "utf8" => "✓",
         "_method" => "patch",
+        "order_article[units_received]" => sprintf("%.3f", $received),
+        "order_article[update_global_price]" => "0",
         #"order_article[units_to_order]"=> "2",
-        "order_article[units_received]" => sprintf("%.2f", $received),
+
         #"article[name]"=> "apfel",
         #"article_price[unit_quantity]"=> "1",
         #"article[unit]"=> "kg",
         #"article_price[price]"=> "11.0",
         #"article_price[tax]"=> "7.0",
         #"article_price[deposit]"=> "0.0",
-        "order_article[update_global_price]" => "0",
         "article[order_number]" => $article["item-number"], // diese Eigenschaft 
         // wird nur deshalb übertragen, weil der Request sonst in der Foodsoft 
-        // erfolglos ist (ROLLBACK). Es kann auch stattdessen eine andere Eigenschaft  
-        // übergeben werden, anscheinend gibt es eine Mindestanzahl an Eigenschaften,
-        // die übergeben werden muss. 
-        "commit" => "Bestell-Artikel+aktualisieren"
+        // erfolglos ist (ROLLBACK). Es kann auch stattdessen eine andere article-Eigenschaft  
+        // übergeben werden, eine leerer article array funktioniert nicht:
+        // "article[]" => ""
+
+        //"commit" => "Bestell-Artikel+aktualisieren"
       )
     );
   }
@@ -810,7 +1089,37 @@ class Foodsoft
 
 
 
+  function get_supplier($supplier_id)
+  {
+    $html = $this->get_html($this->fc_url("/suppliers/$supplier_id"));
+    $supplier = ["name" => $html->find("h1", 0)->plaintext];
+    $divs = $html->find("div[class=span6]");
 
+    $div = current($divs); # general supplier infos
+    # ...
+
+    $div = next($divs); # Letzte Lieferungen
+    # ...
+
+    $div = next($divs); # Letzte Bestellungen
+    $supplier["orders"] = [];
+    foreach ($div->find("table tbody tr") as $tr) {
+      $td = $tr->find("td");
+      $url = $td[0]->find("a", 0)->href;
+      $id = explode("/", $url)[3];
+      #print "$id<br>";
+      $supplier["orders"][$id] = [
+        "start-date-str" => $date = $td[0]->plaintext,
+        "start-date" => date_create($date),
+        "end-date-str" => $date = $td[1]->plaintext,
+        "end-date" => date_create($date),
+        "status" => $td[2]->plaintext,
+        "changed-by" => $td[3]->plaintext
+      ];
+    }
+
+    return $supplier;
+  }
 
 
 
@@ -860,8 +1169,21 @@ class Foodsoft
         $invoice[$key] = $value;
       }
     }
-    $invoice["Gewinn"] = $invoice["Total"] - $invoice["Pfandbereinigter Betrag"];
+    if (key_exists("Total", $invoice)) {
+      $invoice["Gewinn"] = $invoice["Total"] - $invoice["Pfandbereinigter Betrag"];
+    }
     return $invoice;
+  }
+
+  function invoice_update($invoice_id, $data)
+  {
+    $data["_method"] = "patch";
+    $this->post(
+      $this->url("/finance/invoices/$invoice_id"),
+      $data,
+      TRUE
+    );
+    return $data;
   }
 }
 
