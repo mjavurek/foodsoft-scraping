@@ -20,8 +20,8 @@ import datetime
 from fuzzywuzzy import fuzz
 from functools import partial
 
-# import pickle
-import balance
+import pickle
+#import balance
 
 # logging.basicConfig(level=logging.DEBUG)
 logging.basicConfig(level=logging.WARN)
@@ -48,10 +48,21 @@ def negative_red(format, number, positive_green=False):
     s = format % number
     if number<0:
         s = "\x1B[38;2;255;0;0m" + s + "\x1B[m"
+        # https://www.baeldung.com/linux/formatting-text-in-terminals 
     elif number>0 and positive_green: 
         s = "\x1B[38;2;0;255;0m" + s + "\x1B[m"
     return s 
 
+def write_to_file(filename, data):
+    with open(filename, 'wb') as f:
+        pickle.dump(data, f, pickle.HIGHEST_PROTOCOL)
+
+def read_from_file(filename, default):
+    try:
+        with open(filename, 'rb') as f:
+            return pickle.load(f)
+    except:
+        return default
 # ---------------------------------------------------------------------------------------------
 
 
@@ -85,6 +96,9 @@ class FSConnector:
 
         if user and password:
             self.login(user, password)
+        
+        self.deliveries = []
+        self.deliveries_paid = {}
 
     def login(self, user, password):
         self._user = user
@@ -96,20 +110,28 @@ class FSConnector:
         self._session = requests.Session()
         print("login get", self._url_login_request,)
         request = self._get(self._url_login_request, login_header)
+        # print("headers:", request.headers)
 
         print("login post", self._url_login_post)
         login_header['Referer'] = self._url_login_request
-        response = self._post(self._url_login_post,
+        self.response = self._post(self._url_login_post,
                               login_header, self._login_data, request)
+        # print(self.response.content)
+        # print("headers:", self.response.headers)
+        self._get_csfr_token()
         logging.debug(user + ' logged in sucessfully to ' + self._url)
         print(user + ' logged in sucessfully to ' + self._url)
+
 
     def logout(self):
         if self._session:
             self._session.close()
         self._session = None
 
-
+    def _get_csfr_token(self):
+        decoded_content = self.response.content.decode('utf-8')
+        self.page = bs(decoded_content, 'html.parser')    
+        self.csrf_token = self.page.find("meta", attrs={"name":"csrf-token"})["content"]
 
     def _get_url(self, href):
         # '/franckkistl/stock_articles/1318' ==> https://app.foodcoops.at/franckkistl/stock_articles/1318
@@ -160,11 +182,8 @@ class FSConnector:
         self.url = self._complete_url(url)
         #print("get", self.url)
         self.response = self._get(self.url, self._default_header)
-        decoded_content = self.response.content.decode('utf-8')
-        page = bs(decoded_content, 'html.parser')    
-        self.csrf_token=page.find("meta", attrs={"name":"csrf-token"})["content"]
-        #print("csrf-token:", self.csrf_token)
-        return page
+        self._get_csfr_token()
+        return self.page
 
     def get_articles_CSV(self, supplier_id):
         response = self._get(self._url + 'suppliers/' +
@@ -190,9 +209,55 @@ class FSConnector:
 
         return response
 
-# ==== suppliers =========================================================================================
+    def create_link(self):
+        headers = self._default_header
+        url = self._complete_url(f"finance/links")
+        data = {"_method": "post", "authenticity_token": self.csrf_token}
+        print(f"{url=}")
+        print(f"{data=}")
+        self.response = self._session.post(
+                url, headers=headers, data=data, cookies=self.response.cookies)
+        self._get_csfr_token()
+        h1 = self.page.h1.string
+        id =  h1.split()[1]
+        print("link id:", id)
+        return id
 
-    def get_suppliers(self, deliveries=False, suspend_limit_days=9999999):
+
+
+    def add_to_link(self, link_id="new", fc_transactions=[], invoices=[]):
+        if link_id=="new":
+            link_id = self.create_link()
+            url = self._complete_url(f"finance/links/{link_id}")
+        else:
+            url = self._complete_url(f"finance/links/{link_id}")
+            print(f"{url=}")
+            #request = self._get(url, header)
+            page = self.get_page(url)
+        headers = self._default_header
+        headers['Referer'] = url
+        for fc_transaction in fc_transactions:
+            url_ft = url + f"/financial_transactions/{fc_transaction}"
+            data = {"_method": "put", "authenticity_token": self.csrf_token}
+            print(f"{url_ft=}")
+            print(f"{data=}")
+            response = self._session.post(
+                url_ft, headers=headers, data=data, cookies=self.response.cookies)
+            print(response)
+            #print(response.content)
+        for invoice in invoices:
+            url_invoice = url + f"/invoices/{invoice}"
+            data = {"_method": "put", "authenticity_token": self.csrf_token}
+            print(f"{url_invoice=}")
+            print(f"{data=}")
+            response = self._session.post(
+                url_invoice, headers=headers, data=data, cookies=self.response.cookies)
+            print(response)            
+        return url
+
+# ==== suppliers, deliveries =========================================================================================
+
+    def get_suppliers(self, deliveries=False, suspend_limit_days=9999999, verbose=True):
         suppliers = []
         suspended = []
         suspended_filename = "suspended-suppliers.txt"
@@ -200,6 +265,11 @@ class FSConnector:
             with open(suspended_filename, "r") as f:
                 suspended = f.read().splitlines()
         page = self.get_page("suppliers")
+        if deliveries:
+            self.deliveries_paid = read_from_file("paid-deliveries.pickle", {})
+            print(len(self.deliveries_paid), "paid deliveries:", self.deliveries_paid)
+            if verbose:
+                print("=== Lieferungen der letzten 365 Tage ====")
         for tr in page.table.tbody.find_all("tr"):
             supplier = {}
             td = tr.find_all("td")
@@ -226,11 +296,11 @@ class FSConnector:
             supplier["deliveries-href"] = td[5].a.get('href')
             # print(supplier)
             if deliveries and supplier["n-deliveries"] > 0 and not supplier["name"] in suspended:
-                supplier["deliveries"] = self.get_deliveries(
-                    supplier["deliveries-href"])
+                supplier["deliveries"] = self.get_supplier_deliveries(
+                    supplier["deliveries-href"], verbose=verbose)
                 last_delivery_date = supplier["deliveries"][0]["date"]
                 days_ago = (datetime.datetime.now() -
-                            last_delivery_date).total_seconds()/24/60/60
+                            last_delivery_date).days # total_seconds()/24/60/60
                 # print(
                 #    f'{supplier["deliveries"][0]["date-str"]} ' +
                 #    f'vor {days_ago:.0f} Tagen: '
@@ -242,6 +312,12 @@ class FSConnector:
                 supplier["deliveries"] = None
                 supplier["last-delivery-days-ago"] = None
             suppliers.append(supplier)
+        if deliveries:
+            write_to_file("paid-deliveries.pickle", self.deliveries_paid)
+            if verbose:
+                print("=========================================")
+                print(len(self.deliveries_paid),"paid deliveries:", self.deliveries_paid)
+                print()
         if len(suspended) > 0:
             with open(suspended_filename, "w") as f:
                 for s in suspended:
@@ -249,10 +325,13 @@ class FSConnector:
         return suppliers, suspended
 
 
-    def get_deliveries(self, href):
-        # print(href)
+    def get_supplier_deliveries(self, href, max_days_ago=365, verbose=True):
+        # href: e.g. /f/suppliers/44/deliveries: list of all deliveries of supplier
+        # from       /f/suppliers => link to deliveries
         deliveries = []
+        
         page = self.get_page(href, url_from_page=True)
+        producer = page.h1.string.split("/")[0]
         for tr in page.table.tbody.find_all("tr"):
             delivery = {}
             td = tr.find_all("td")
@@ -268,19 +347,40 @@ class FSConnector:
             delivery["date-str"] = td[0].string
             delivery["date"] = datetime.datetime.strptime(
                 td[0].string, "%Y-%m-%d")
-            delivery["href"] = td[3].a.get('href')            
-            href = td[1].a.get('href')
-            if "new?" in href:
+            delivery["days-ago"] = (datetime.datetime.now() - delivery["date"]).days
+            outdated = delivery["days-ago"] > max_days_ago
+            delivery["href"] = td[3].a.get('href')  # suppliers/44/deliveries/417 
+            delivery["id"] = delivery["href"].split("/")[5] 
+            if outdated or delivery["id"] in self.deliveries_paid:
+                delivery["amount"] = self.deliveries_paid.get(delivery["id"], "?")
+            else:
+                delivery["amount"] = self.get_delivery(delivery["href"])[0] # 0 -> netto summe
+            invoice_href = td[1].a.get('href')
+            if "new?" in invoice_href: # no invoice for delivery
                 delivery["invoice-href"] = ""
                 delivery["invoice-id"] = None
-                delivery["invoice-amount"] = self.get_delivery(delivery["href"])[0] # 0 -> netto summe
-            else:
-                delivery["invoice-href"] = href
-                delivery["invoice-id"] = href.split("/")[-1]
-                delivery["invoice-amount"] = _float(td[1].a.string)
+                delivery["invoice-paid"] = False
+            else: # invoice exists
+                delivery["invoice-href"] = invoice_href
+                delivery["invoice-id"] = invoice_href.split("/")[-1]
+                # delivery["invoice-amount"] = _float(td[1].a.string)
+                if delivery["id"] in self.deliveries_paid:
+                    delivery["invoice-paid"] = True
+                else:
+                    delivery["invoice-paid"] = "?" if outdated else self.get_invoice(delivery["invoice-id"])["Bezahlt am"]
+                    if not outdated and delivery["invoice-paid"]:
+                        self.deliveries_paid[delivery["id"]] = delivery["amount"]         
             delivery["note"] = td[2].string
 
             deliveries.append(delivery)
+            self.deliveries.append(delivery)
+
+            if verbose and not outdated:
+                print(delivery["id"], f"{producer:<30s}", delivery["date-str"], 
+                      "%7.2f" % delivery["amount"],"€", 
+                      "Rechnung:", delivery["invoice-id"],
+                      "bezahlt:", delivery["invoice-paid"])
+        
         return deliveries
 
 
@@ -307,6 +407,7 @@ class FSConnector:
             deliveries=True, suspend_limit_days="use_saved")
         unpaid = 0
         without_invoice = 0
+        print("--- Lager-Lieferungen Bilanz-------------------------------------")
         for s in suppliers:
             if s["last-delivery-days-ago"] and s["last-delivery-days-ago"] > 0:
                 # print(s["name"])
@@ -316,17 +417,19 @@ class FSConnector:
                     if d["invoice-id"] is None:
                         without_invoice += 1
                         print(
-                            f"  {s['name']}  {d['date-str']} {d['invoice-amount']:7.2f} € netto: keine Rechnung angelegt!")
-                        unpaid += d['invoice-amount']
+                            f"  {s['name']:<20s}  {d['date-str']}      {d['amount']:7.2f} € netto: keine Rechnung angelegt!")
+                        unpaid += d['amount']
                     else:
-                        invoice = self.get_invoice(d['invoice-id'])
-                        if invoice['Bezahlt am'] is None:
-                            unpaid += invoice['Betrag']
+                        # invoice = self.get_invoice(d['invoice-id'])
+                        # if invoice['Bezahlt am'] is None:
+                        if d['invoice-paid'] is None:
+                            unpaid += d["amount"] #invoice['Betrag']
                             print(
-                                f"  {s['name']}  {d['date-str']} {d['invoice-id']} {invoice['Betrag']:7.2f} € unbezahlt!")
+                                f"  {s['name']:<20s}  {d['date-str']} {d['invoice-id']:>5s} {d['amount']:7.2f} € unbezahlt!")
                         # print(
                         #    f"  {d['date-str']} {d['invoice-id']} {invoice['Betrag']:7.2f} €, bezahlt am: {invoice['Bezahlt am']}")
                 # print("")
+        print("-----------------------------------------------------------------")
         print(f"unbezahlte Rechnungen: {unpaid:.2f} €")
         print(f"{without_invoice} Lieferung(en) ohne Rechnung.")
         return unpaid, without_invoice, suppliers
@@ -335,7 +438,8 @@ class FSConnector:
 # ==== stock =========================================================================================
 
 
-    def get_stock_articles(self, numeric=True, href_abs=False):
+    def get_stock_articles(self, numeric=True, href_abs=False, verbose=True):
+        if verbose: print("getting stock_articles... ", end="", flush=True)
         page = self.get_page("stock_articles")
         # <table class='table table-hover' id='articles'>
         table = page.find("table", id='articles')
@@ -363,6 +467,7 @@ class FSConnector:
             #print(name, articles[name])
             total_cash_value += articles[name]["im Lager"] * \
                 articles[name]["Nettopreis"] * (1 + articles[name]["MwSt"])
+        if verbose: print(len(articles), "articles, total", "%.2f" % total_cash_value, "€", end="\n\n")
         return articles, total_cash_value
 
     def export_stock_articles(self, filename="stock_articles.csv"):
@@ -609,7 +714,7 @@ class FSConnector:
 
 
     def get_orders(self, begin_date=None, per_page=20, producer_selected=[], producer_excluded=[],
-                      only_id=None, start_page=1):
+                      only_id=None, start_page=1, skip_balanced=True):
         format = "%d.%m.%Y %H:%M"
         if not begin_date is None:
             begin_datetime = datetime.datetime.strptime(
@@ -618,6 +723,7 @@ class FSConnector:
         order_after_begin = True
         page_number = start_page
         orders = {}
+        orders_balanced = read_from_file("orders-balanced.pickle", [])
         while order_after_begin:
             # ... finance/balancing?page=2&per_page=20 ...
             print("------------------- page %d ---------------" %
@@ -650,51 +756,62 @@ class FSConnector:
                 # "abgerechnet (...)": Bilanzsumme in Klammer nicht anzeigen weil falsch wenn Rechnung über mehrere Bestellungen
                 order["status"] = order_td[2].string.split("(")[0].strip() # beendet oder "abgerechnet (...)""
                 order["status-num"] = 1 if "abgerechnet" in order["status"] else 0
+                
                 print("===", page_number, order["date"], order["producer"], order["status"])
 
-                price_sum, deposit_sum, transport_fees, invoice = self.get_order(
-                    url=order["url"])
-                order["sum"] = price_sum
-                order["deposit"] = deposit_sum
-                order["transport-fees"] = transport_fees
-                order["invoice-id"] = invoice
-
-                if invoice:
-                    d = self.get_invoice(invoice)
-                    invoice_number = d["Nummer"]
-                    
-                    if invoice_number is None:
-                        invoice_number = "--"
-                        warning_message += f"Rechnung {invoice} hat keine Rechnungsnummer.\n"
-                    invoice_date = d["Rechnungsdatum"]
-                    if invoice_date is None:
-                        invoice_date = "####-##-##"
-                        warning_message += f"Rechnung {invoice} hat kein Rechnungsdatum.\n"
-                        #raise Exception(f"Rechnung https://app.foodcoops.at/franckkistl/finance/invoices/{invoice} hat kein Datum! ")
-                    invoice_paid_date = d["Bezahlt am"]
-                    invoice_amount = "%.2f" % d["Betrag"]
-                    if invoice_paid_date is None:
-                        invoice_paid_date = ""
-                    order["invoice-number"] = invoice_number
-                    order["invoice-date"] = invoice_date
-                    order["invoice-paid-date"] = invoice_paid_date
-                    order["invoice-amount"] = invoice_amount
+                if skip_balanced and order["id"] in orders_balanced:
+                    order["status-num"] = 7
+                    order["status"] += ", Rechnung angelegt und bezahlt"
+                    print("   >>> abgerechnet und Rechnung bezahlt - überspringe Details!")
                 else:
-                    invoice_number = ""
-                    invoice_date = ""
-                    invoice_paid_date = ""
-                    invoice_amount = ""
-                 
-                if invoice_number:
-                    order["status-num"] += 2
-                    order["status"] += ", Rechnung angelegt"
-                if invoice_paid_date:
-                    order["status-num"] += 4 
-                    order["status"] += " und bezahlt"
+                    price_sum, deposit_sum, transport_fees, invoice = self.get_order(
+                        url=order["url"])
+                    order["sum"] = price_sum
+                    order["deposit"] = deposit_sum
+                    order["transport-fees"] = transport_fees
+                    order["invoice-id"] = invoice
+
+                    if invoice:
+                        d = self.get_invoice(invoice)
+                        invoice_number = d["Nummer"]
+                        
+                        if invoice_number is None:
+                            invoice_number = "--"
+                            warning_message += f"Rechnung {invoice} hat keine Rechnungsnummer.\n"
+                        invoice_date = d["Rechnungsdatum"]
+                        if invoice_date is None:
+                            invoice_date = "####-##-##"
+                            warning_message += f"Rechnung {invoice} hat kein Rechnungsdatum.\n"
+                            #raise Exception(f"Rechnung https://app.foodcoops.at/franckkistl/finance/invoices/{invoice} hat kein Datum! ")
+                        invoice_paid_date = d["Bezahlt am"]
+                        invoice_amount = "%.2f" % d["Betrag"]
+                        if invoice_paid_date is None:
+                            invoice_paid_date = ""
+                        order["invoice-number"] = invoice_number
+                        order["invoice-date"] = invoice_date
+                        order["invoice-paid-date"] = invoice_paid_date
+                        order["invoice-amount"] = invoice_amount
+                    else:
+                        invoice_number = ""
+                        invoice_date = ""
+                        invoice_paid_date = ""
+                        invoice_amount = ""
+                        
+                    if invoice_number:
+                        order["status-num"] += 2
+                        order["status"] += ", Rechnung angelegt"
+                    if invoice_paid_date:
+                        order["status-num"] += 4 
+                        order["status"] += " und bezahlt"
+                    if order["status-num"]==7:
+                        orders_balanced.append(order["id"])
+
                 orders[order["id"]] = order
             if begin_date is None:
                 order_after_begin = False
         print(warning_message)
+        print(len(orders_balanced),"/", len(orders) ,"balanced orders with paid invoices:\n", orders_balanced)
+        write_to_file("orders-balanced.pickle", orders_balanced)
         return orders
         
 
@@ -1034,7 +1151,7 @@ class FSConnector:
             else:
                 imbalance = 0
             
-            invoice_id = order["invoice-id"]
+            invoice_id = order.get("invoice-id", None)
             if invoice_id:
                 if invoice_id in invoices: # Rechnung kam schon bei einer anderen Bestellung vor
                     imbalance = 0
@@ -1042,7 +1159,6 @@ class FSConnector:
                 else:
                     invoices.append(invoice_id)
             if not imbalance==0 or "?" in status: # von mehreren Bestellungen einer Rechnung nur die erste anzeigen
-                
                 print(("%6d " % id) + order["date"] + (" %8.2f " % imbalance) +
                     "%d" % order["status-num"] + " " + order["producer"]+" "+order.get("invoice-number", "--keine Rechnung--")+": "+status)
             self.earliest_orderdate = order["date"]
@@ -1064,12 +1180,10 @@ class FSConnector:
         ordergroups = self.get_ordergroup_accounts()
         member_credit_orders = 0
         member_credit_membership_fee = 0
-        for data in ordergroups:
+        for data in ordergroups.values():
             print("%-30s " % data["Name"], end="")
             for k in ["Guthaben Bestellungen", "Guthaben Mitgliedsbeitrag", "Guthaben gesamt"]:
-                x = data[k]
-                if x<0: print("\x1B[38;2;255;0;0m", end="") # Text auf rot stellen, https://www.baeldung.com/linux/formatting-text-in-terminals 
-                print("%9.2f " % x, end="\x1B[m")  # reset text format
+                print(negative_red("%9.2f ", data[k]), end="")
             print("")
             member_credit_orders += data["Guthaben Bestellungen"]
             member_credit_membership_fee += data["Guthaben Mitgliedsbeitrag"]
@@ -1092,8 +1206,8 @@ class FSConnector:
             print(f"*** Bilanz stimmt möglicherweise nicht, weil {stock_deliveries_without_invoice} Rechnung(en) zu Lieferungen fehlen!")
         print(
             f"Lagerartikel Wert: {stock_cash_value:.2f} €, " +
-            f"abz. unbez. Rechnungen: {stock_cash_value - unpaid_stock_deliveries:.2f} €")
-        print("---------------------------------------------------\n")
+            f"abz. unbez. Rechnungen: {stock_cash_value - unpaid_stock_deliveries:.2f} €\n")
+        
         stock_cash_value -= unpaid_stock_deliveries
 
 
@@ -1164,18 +1278,18 @@ class FSConnector:
         response = self._get(url, self._default_header)
         decoded_content = response.content.decode('latin-1')
         lines = decoded_content.splitlines()
-        keys = lines[0].split(";")
+        keys = lines.pop(0).split(";") # pop deletes first line from array
         # ['Id', 'Name', 'Beschreibung', 'Kontostand', 'Created on', 'Kontaktperson', 'Telefon', 'Adresse', 
         #  'Break start', 'Break end', 'Zuletzt aktiv', 'Zuletzt bestellt', 'Mitgliedsbeitrag']
         n = len(keys)
         data = {}
         i_next = 0
-        for i,line in enumerate(lines[1:]):
+        for i,line in enumerate(lines):
             items = line.split(";")
             if i_next>i: continue
             i_next = i+1
             while len(items)<n: # linebreaks in text field!
-                line += ' ' + lines[i_next+1] # +1: account for header line
+                line += ' ' + lines[i_next]
                 i_next += 1
                 items = line.split(";")
             d = dict(zip(keys,items))
@@ -1183,7 +1297,7 @@ class FSConnector:
             key = 'Kontostand' ; d[key] = float(d[key])
             key = 'Mitgliedsbeitrag' ; d[key] = int(d[key].replace(" ","")) if d[key] and d[key]!='""' else 0
             #key = 'Id' ; d[key] = int(d[key])
-            data[d["Id"]] = d.copy()
+            data[d["Id"]] = d #.copy()
         return data
 
 
@@ -1196,6 +1310,7 @@ if __name__ == "__main__":
     foodsoft = FSConnector(login=foodsoft_login)
     
     members = foodsoft.get_ordergroups_csv()
+    print("--- ordergoups: -----------------")
     for id,member in members.items():
         print(id,member["Name"], member["Created on"])
 
