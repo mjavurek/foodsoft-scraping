@@ -1,5 +1,6 @@
-filename='Downloads/Angebotsliste 2024-10 LIEFERUNG OÖ.txt'
+filename='Downloads/Angebotsliste 2025-03 LIEFERUNG OÖ.txt'
 # pdftotext -layout Angebotsliste\ 2024-08\ LIEFERUNG\ OÖ.pdf
+# python hofer.py
 
 categories = { # Foodsoft-Kategorien aus Überschriften der Liste
   "BIO-WEISSWEINE": "Weisswein", 
@@ -13,7 +14,8 @@ categories = { # Foodsoft-Kategorien aus Überschriften der Liste
 category_exceptions = { # Ausnahmen für Kategorien: Ausnahmeregel nur anwenden, wenn "exclude" nicht in der Artikelbezeichnung vorkommt
   "Grüner Veltliner": {"category": "Weisswein"}, 
   "Zweigelt": {"category": "Rotwein", "exclude": "Weißer"},
-  "Rosé": {"category": "Rosé-Wein", "exclude": "Biosecco"},
+  "Rosé": {"category": "Rosé-Wein", "exclude": ["Biosecco", "Pet Nat"]},
+  "Perlenspiel": {"category": "Säfte, Getränke"},
 }
 
 exclude = ["Karton", "pfand"] # Zeilen, die € Zeichen enthalten, aber keine Artikel sind
@@ -21,7 +23,7 @@ exclude_small_cat = ["Sekt und Prosecco", "Säfte, Getränke"] # kleine Gebinde 
 
 producer_deposits = {1.0: 0.10} # Produzent*innen-Pfand 10 Cent auf 1 Liter Flaschen
 no_deposit_categories = ["Sekt und Prosecco"] # kein FC Pfand in diesen Kategorien
-no_deposit_names = ["Origin"] # kein FC Pfand wenn einer dieser Begriffe in der Artikelbezeichnung vorkommt
+no_deposit_names = ["Origin", "Perlenspiel"] # kein FC Pfand wenn einer dieser Begriffe in der Artikelbezeichnung vorkommt
 
 replace_in_line = {
     "1l":    "1 l",
@@ -50,11 +52,14 @@ def replace_multiple(string, replace_items, separator=""):
     return string
 
 def is_item_in_str(items, string):
+    if isinstance(items, str): items = [items]
     for item in items:
         if item in string: 
             return item
     return False
 
+def _float(string):
+    return float(string.replace(",","."))
 
 with open(filename) as file:
     lines = [line.rstrip() for line in file]
@@ -75,8 +80,8 @@ for line in lines:
     this_category = category
     for key,cat in category_exceptions.items():
         if key in line:
-           if "exclude" in cat:
-               if cat["exclude"] in line: continue
+           if "exclude" in cat and is_item_in_str(cat["exclude"], line): 
+               continue
            this_category = cat["category"]            
     
     # filter articles
@@ -92,16 +97,28 @@ for line in lines:
     if not "l" in s: # e.g. ..., "0,75", "l", ...
         print(s)
         raise Exception("'l' nicht als eigenes Wort gefunden: "+line)
+    
+    two_sizes = s[s.index("l")+1] == "/" # Biosecco Rosé       0,75 l / 0,25 l
 
     # get article details
-    article = dict(
-        category = this_category,
-        name = " ".join(s[:s.index("l")-1]),        
-        description = " ".join(s[s.index("l")+1 : -2]),
-        volume = float(s[s.index("l")-1].replace(",",".")),
-        price = float(s[-1].replace(",",".")),
-        deposit = 0.50,
-    )
+    if two_sizes:
+        article = dict(
+            category = this_category,
+            name = " ".join(s[:s.index("l")-1]),        
+            description = " ".join(s[s.index("l")+5 : -5]), # 0,75 l / 0,25 l  SW  tr., 12,0 Vol.%        € 7,60 / € 3,90
+            volume = _float(s[s.index("l")-1]), # kleine Größe ignorieren
+            price = _float(s[-4]), # kleine Größe ignorieren
+            deposit = 0, # kein Pfand auf 
+        )
+    else:
+        article = dict(
+            category = this_category,
+            name = " ".join(s[:s.index("l")-1]),        
+            description = " ".join(s[s.index("l")+1 : -2]),
+            volume = _float(s[s.index("l")-1]),
+            price = _float(s[-1]),
+            deposit = 0.50,
+        )
     
     if (this_category in no_deposit_categories or 
         is_item_in_str(no_deposit_names, article["name"])): 
