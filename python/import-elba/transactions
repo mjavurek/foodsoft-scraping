@@ -1,0 +1,27 @@
+#!/bin/bash
+
+echo ---------------------------------------------------------------------
+echo " Foodsoft ELBA Bankdaten-Import"
+echo ---------------------------------------------------------------------
+echo "Im Webbrowser (Firefox) ins ELBA einloggen und dabei "
+echo "Extras > Browser-Werkzeuge > Werkzeuge für Web Entwickler öffnen (Strg+Shift+I)."
+echo "Unter Netzwerkanalyse im Filterfeld (Adressen durchsuchen) 'kontou' (für kontoumsaetze) eingeben"
+echo "Im rechten Kasten auf Antwort gehen, dort 'unformatiert' aktivieren, rechte Maustaste: alles auswählen und mit Strg+C kopieren."
+
+read -p "Taste drücken um weiter zu machen." -n 1 
+
+echo "Schreibe Clipboard Inhalt in bank_transactions.json ..."
+xclip -selection clipboard -o > bank_transactions.json
+
+echo
+echo "In der Foodsoft MySQL Datenbank über phpMyAdmin auf die Tabelle bank_transactions gehen und dort exportieren als CSV "
+echo "in Downloads/bank_transactions.csv"
+
+read -p "Taste drücken um weiter zu machen." -n 1 
+echo 
+
+python3 transactions.py
+
+echo
+echo "Falls neue Transaktionen vorhanden, in der Foodsoft MySQL Datenbank über phpMyAdmin in der Tabelle bank_transactions"
+echo "Import von Downloads/bank_transactions_import.csv durchführen."
