@@ -7,3 +7,5 @@ Run `bash transaction` in a Linux terminal to get instructions.
 Ergänzungen:
 - Das Shell-Skript ```transactions``` muss nicht ausgeführt werden. Es geht auch, manuell die Zwischenablage mit den kopierten Bankdaten in die Datei ```banktransactions.json``` einzufügen und dann nur das Python Skript mit ```python transactions.py``` zu starten.
 - Es geht auch (besser?), vor dem Kopieren der Bankdaten nicht auf "unformatiert" umzustellen, und dann mit rechte Maustaste "alles Kopieren" auszuwählen
+
+<img width="1517" height="963" alt="grafik" src="https://github.com/user-attachments/assets/93d28b17-82e5-4821-8323-fe4730ca4953" />
