@@ -7,6 +7,13 @@ Run `bash transaction` in a Linux terminal to get instructions.
 Ergänzungen:
 - Das Shell-Skript ```transactions``` muss nicht ausgeführt werden. Es geht auch, manuell die Zwischenablage mit den kopierten Bankdaten in die Datei ```banktransactions.json``` einzufügen und dann nur das Python Skript mit ```python transactions.py``` zu starten. Dazu die Beschreibung hier.
 
+### Voraussetzungen
+- Zugriff aufs ELBA über Webbrowser 
+- Zugriff auf MySQL Datenbank der Foodsoft über myPhpAdmin (bei IGF anfodern)
+- Firefox (oder Chrome?) Webbrwoser
+- Texteditor
+- Python Interpretor: https://www.python.org/downloads/
+
 ### Beschreibung ohne Bash-Skript 
 - Im Webbrowser (Firefox) ins ELBA einloggen und dabei *Extras > Browser-Werkzeuge > Werkzeuge für Web Entwickler* öffnen (Strg+Shift+I).
 - Unter *Netzwerkanalyse* im Filterfeld (*Adressen durchsuchen*) ```kontou``` (für kontoumsaetze) eingeben
