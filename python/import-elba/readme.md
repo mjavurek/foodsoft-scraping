@@ -2,17 +2,15 @@
 
 This is a workaround if https://github.com/bankproxy/bankproxy/blob/main/src/tasks/MeinElba.ts gets outdated due to changes in the data communication in the ELBA web bank interface.
 
-Run `bash transaction` in a Linux terminal to get instructions.
-
-Ergänzungen:
-- Das Shell-Skript ```transactions``` muss nicht ausgeführt werden. Es geht auch, manuell die Zwischenablage mit den kopierten Bankdaten in die Datei ```banktransactions.json``` einzufügen und dann nur das Python Skript mit ```python transactions.py``` zu starten. Dazu die Beschreibung hier.
-
 ### Voraussetzungen
-- Zugriff aufs ELBA über Webbrowser 
+- Zugriff aufs ELBA über Webbrowser am PC (nicht über Android Smartphone, Tablet o.ä.)
 - Zugriff auf MySQL Datenbank der Foodsoft über myPhpAdmin (bei IGF anfordern)
 - Firefox (oder Chrome?) Webbrowser
 - Texteditor (Windows: Notepad, Notepad++; Apple: ...?; Linux: gedit, ...)
 - Python Interpretor: https://www.python.org/downloads/ (Linux: bereits im System integriert)
+
+### Beschreibung mit Bash-Skript unter Linux
+`bash transaction` in einem Linux Terminal starten und den Anweisungen folgen.
 
 ### Beschreibung ohne Bash-Skript 
 - Im Webbrowser (Firefox) ins ELBA einloggen und dabei *Extras > Browser-Werkzeuge > Werkzeuge für Web Entwickler* öffnen (Strg+Shift+I).
