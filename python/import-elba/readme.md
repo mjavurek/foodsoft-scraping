@@ -9,10 +9,10 @@ Ergänzungen:
 
 ### Voraussetzungen
 - Zugriff aufs ELBA über Webbrowser 
-- Zugriff auf MySQL Datenbank der Foodsoft über myPhpAdmin (bei IGF anfodern)
-- Firefox (oder Chrome?) Webbrwoser
-- Texteditor
-- Python Interpretor: https://www.python.org/downloads/
+- Zugriff auf MySQL Datenbank der Foodsoft über myPhpAdmin (bei IGF anfordern)
+- Firefox (oder Chrome?) Webbrowser
+- Texteditor (Windows: Notepad, Notepad++; Apple: ...?; Linux: gedit, ...)
+- Python Interpretor: https://www.python.org/downloads/ (Linux: bereits im System integriert)
 
 ### Beschreibung ohne Bash-Skript 
 - Im Webbrowser (Firefox) ins ELBA einloggen und dabei *Extras > Browser-Werkzeuge > Werkzeuge für Web Entwickler* öffnen (Strg+Shift+I).
