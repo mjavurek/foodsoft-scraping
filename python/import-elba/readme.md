@@ -4,7 +4,7 @@ This is a workaround if https://github.com/bankproxy/bankproxy/blob/main/src/tas
 
 **Die Kommunikation hat sich inzwischen wieder geändert und die Skripts sowie die folgenden Beschreibungen müssen erneut angepasst werden.**
 
-Das Importieren von Bankdaten aus der Foodsoft funktioniert nach wie vor, nachdem die ID der zuletzt importieren Buchung einmalig zurück gesetzt wird.
+Das Importieren von Bankdaten aus der Foodsoft funktioniert nach wie vor, nachdem die ID der zuletzt importieren Buchung einmalig zurück gesetzt wird. Die Skripts hier werden also derzeit nicht benötigt, Stand Oktober 2025.
 
 ### Voraussetzungen
 - Zugriff aufs ELBA über Webbrowser am PC (nicht über Android Smartphone, Tablet o.ä.)
