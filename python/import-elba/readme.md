@@ -2,6 +2,10 @@
 
 This is a workaround if https://github.com/bankproxy/bankproxy/blob/main/src/tasks/MeinElba.ts gets outdated due to changes in the data communication in the ELBA web bank interface.
 
+**Die Kommunikation hat sich inzwischen wieder geändert und die Skripts sowie die folgenden Beschreibungen müssen erneut angepasst werden.**
+
+Das Importieren von Bankdaten aus der Foodsoft funktioniert nach wie vor, nachdem die ID der zuletzt importieren Buchung einmalig zurück gesetzt wird.
+
 ### Voraussetzungen
 - Zugriff aufs ELBA über Webbrowser am PC (nicht über Android Smartphone, Tablet o.ä.)
 - Zugriff auf MySQL Datenbank der Foodsoft über myPhpAdmin (bei IGF anfordern)
