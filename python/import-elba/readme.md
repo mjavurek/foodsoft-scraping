@@ -2,7 +2,7 @@
 
 This is a workaround if https://github.com/bankproxy/bankproxy/blob/main/src/tasks/MeinElba.ts gets outdated due to changes in the data communication in the ELBA web bank interface.
 
-**Die Kommunikation hat sich inzwischen wieder geändert und die Skripts sowie die folgenden Beschreibungen müssen erneut angepasst werden.**
+Die Kommunikation hat sich inzwischen vorübergehend geändert und die Skripts sowie die folgenden Beschreibungen hätten erneut angepasst werden müssen. Zuletzt erflgreich getestet am 3.11.2025.
 
 Das Importieren von Bankdaten aus der Foodsoft funktioniert nach wie vor, nachdem die ID der zuletzt importieren Buchung einmalig zurück gesetzt wird. Die Skripts hier werden also derzeit nicht benötigt, Stand Oktober 2025.
 
