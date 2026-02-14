@@ -487,6 +487,17 @@ class FSConnector:
                 output_file.write(
                     a+";"+";".join([str(articles[a][d]) for d in articles[a]]) + ";"+str(value)+"\n")
 
+    
+    def delete_stock_article(self, article_id):
+        headers = self._default_header
+        url = self._complete_url(f"stock_articles/{article_id}")
+        data = {"_method": "delete", "authenticity_token": self.csrf_token}
+        print(f"{url=}")
+        print(f"{data=}")
+        self.response = self._session.post(
+                url, headers=headers, data=data, cookies=self.response.cookies)
+        return self.response
+    
     def get_stock_taking(self, tid, numeric=True, articles=None, min_similarity=60):
         # taking = Inventur
         if articles == "get":
@@ -1170,7 +1181,7 @@ class FSConnector:
 
 
 
-    def foodcoop_balance(self, orders):
+    def foodcoop_balance(self, orders, exclude_ordergroups=[]):
         
         # --- bank_credit
         bank_credit, transactions = self.get_bank_account()
@@ -1179,22 +1190,31 @@ class FSConnector:
         print("\n--- Mitglieder Guthaben Bilanz ------------------------------------------------------------------------")
         ordergroups = self.get_ordergroup_accounts()
         member_credit_orders = 0
+        credit_orders_total = 0
         member_credit_membership_fee = 0
         for data in ordergroups.values():
-            print("%-30s " % data["Name"], end="")
+            og = data["Name"]
+            exclude_og = og in exclude_ordergroups
+            if exclude_og:
+                og += "*"
+            print("%-30s " % og, end="")
             for k in ["Guthaben Bestellungen", "Guthaben Mitgliedsbeitrag", "Guthaben gesamt"]:
                 print(negative_red("%9.2f ", data[k]), end="")
             print("")
+            credit_orders_total += data["Guthaben Bestellungen"]
+            if exclude_og: continue
             member_credit_orders += data["Guthaben Bestellungen"]
             member_credit_membership_fee += data["Guthaben Mitgliedsbeitrag"]
         member_credit_total = member_credit_orders + member_credit_membership_fee
         print("-------------------------------------------------------------------------------------------------------")
-        print("%-30s %9.2f %9.2f %9.2f" % ("Summe", member_credit_orders, member_credit_membership_fee, member_credit_total))
+        print("%-30s %9.2f %9.2f %9.2f" % ("Summe inkl. FC*", credit_orders_total, member_credit_membership_fee, credit_orders_total + member_credit_membership_fee))
+        print("%-30s %9.2f %9.2f %9.2f" % ("Summe exkl. FC*", member_credit_orders, member_credit_membership_fee, member_credit_total))
         print("Mitglieder Summe Guthaben Bestellungen: %.2f €, Mitgliedsbeitrag: %.2f €, gesamt: %.2f €" % (
             member_credit_orders, member_credit_membership_fee, member_credit_total))
+        print("Bank Guthaben: %.2f €, abzüglich Gesamtguthaben: %.2f € " %
+              (bank_credit, bank_credit - credit_orders_total))
         print("Bank Guthaben: %.2f €, abzüglich Mitglieder Guthaben: %.2f € " %
               (bank_credit, bank_credit - member_credit_total))
-
         # --- order balance
         order_imbalance = self.order_balance(orders)
 
@@ -1272,7 +1292,7 @@ class FSConnector:
         return users
     
     
-    def get_ordergroups_csv(self):
+    def get_ordergroups_csv(self, stop_if_error=True):
         url = self._url + "admin/ordergroups.csv"
         print(url)
         response = self._get(url, self._default_header)
@@ -1295,8 +1315,18 @@ class FSConnector:
             d = dict(zip(keys,items))
             key = 'Id' ;         d[key] = int(d[key])
             key = 'Kontostand' ; d[key] = float(d[key])
-            key = 'Mitgliedsbeitrag' ; d[key] = int(d[key].replace(" ","")) if d[key] and d[key]!='""' else 0
-            #key = 'Id' ; d[key] = int(d[key])
+            key = 'Mitgliedsbeitrag' ; mb = d[key]
+            if "- " in mb: # negative value with space, e.g. "- 10"
+                mb = mb.replace(" ", "")
+                if stop_if_error:
+                    raise Exception(f"Mitgliedsbeitrag mit Leerzeichen zwischen Minus und Betrag bei {d['Name']}: '{d[key]}' " + 
+                                    "Bitte in der Foodsoft bearbeiten unter Administration -> Bestellgruppen -> Mitgliedsbeitrag: "+
+                                    "Minuszeichen direkt vor Betrag ohne Leerzeichen eingeben!")
+                else:
+                    print("*** Warnung: Mitgliedsbeitrag mit Leerzeichen zwischen Minus "+
+                          "und Betrag bei " + d["Name"] + ": '%s'" % (d[key]))
+            if mb=='""' or mb=="": mb = "0"
+            d[key] = int(mb)
             data[d["Id"]] = d #.copy()
         return data
 
