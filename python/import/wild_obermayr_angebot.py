@@ -12,7 +12,7 @@ xlsx = "Downloads/Frankkistl 2026.xlsx"
 piece_units = {
     "Zuckerhut": 0.7,
     "Chinakohl": 1.0,
-    "Radicchio": 0.25,
+    "Radicchio": 0.5,
     "Treviso": 0.5,
     "Schmelzkohlrabi": 0.5,
     "Frühkraut": 1.3,
@@ -49,22 +49,28 @@ name_changes = {
     "Gelbe Rüben": "Karotten gelb",
     "Bunte Karotten": "Karotten bunt",
     "Schnittsalat -mix" : "Schnittsalat-Mix",
+    "Gelbe Zwiebeln": "Zwiebeln gelb",
+    "Rote Zwiebeln": "Zwiebeln rot",
+    "Schalottenzw.": "Zwiebeln Schalotten",
+    "Gemüsezwiebeln": "Zwiebeln Gemüsezwiebeln",
+    "Pepino": "Pepino Melonenbirne",
 }
 
 add_prefix = {
     "Salat": ["Häuptelsalat", "Romanasalat", "Eissalat",
-        "Batavia", "Lollo", "Eichblatt", "Endivie", "Zuckerhut"],
+        "Batavia", "Lollo", "Eichblatt", "Endivie", "Zuckerhut", "Chinakohl"],
     "Tomaten": ["paradeiser"],
     "Pilze": ["Shitake", "seitling", "Champignon"],
     "Gurken": ["gurken"],
-    "Zwiebel": ["zwiebel", "Schalotten"],
+    #"Zwiebel": ["zwiebel", "Schalotten"], # moved to name_changes
     "Kürbis": ["Patison", "Hokkaido", "Butternu", "Crown prince", "Longe de Nice"],
 }
 
 split_articles = {
     "Paprika grün,weiß, lila": {"base": "Paprika", "vars": ["grün", "weiß", "lila"]},
     "Grünkohl Grün/Rot": {"base": "Grünkohl", "vars": ["grün", "rot"]},
-    # "template": {"base": "", "vars": ["", "", ""]}
+    "Pfefferoni": {"base": "Pfefferoni", "vars": ["mild", "scharf"]},
+    # "template": {"base": "", "vars": ["", "", ""]},
 }
 
 categories = {
@@ -79,6 +85,11 @@ categories = {
         'Rosmarin', 'Schnittknoblauch', 'Schnittlauch', 'Thymian'], 
     "Nüsse": ["nüsse"],
     
+}
+
+notes = {
+    "Gemüsezwiebel":  "etwas süß, kann roh gegessen werden",
+    "Pimientos de Padron": "kleine grüne Paprika",
 }
 
 ignore_articles = [
@@ -120,9 +131,19 @@ def article_number(name, length=6, name_chars=2):
     length -= name_chars
     return name[:name_chars].upper() + result.zfill(length)[-length:]
 
+def str_join(s1, s2):
+    return s1 + (" " if s1 and s2 else "") + s2
+
+
+
 article_numbers = []
 foodsoft_table = []
-for sheet, cols in zip([0,0,1,2], ["B:D", "G:I", "A,C", "A,D,E,F"]):
+for sheet, cols in [
+    [0, "B:D"], # Gemüse Spalte 1
+    [0, "G:I"], # Gemüse Spalte 2
+    [1, "A,C"], # Pflanzen
+    [2, "A,D,E,F"],  # Säfte, Brot
+]:
     prefix = ""
     h=1
     skip_rows=0
@@ -217,16 +238,17 @@ for sheet, cols in zip([0,0,1,2], ["B:D", "G:I", "A,C", "A,D,E,F"]):
         )
         
         note = ""
-        if name in piece_units or name in var_units:
+        has_piece_unit = name in piece_units
+        has_var_unit = name in var_units
+        if has_piece_unit or has_var_unit:
             if unit.lower()!="kg": raise Exception(f"{name} Einheit {unit} != kg") 
             kg_per_piece = piece_units.get(name, var_units.get(name))
             price_per_kg = price
             #name = name + (" (%.2f €/kg)" % price).replace(".",",")
             note = ("%.2f €/kg" % price).replace(".",",")
-            unit = (("Stück " if name in piece_units else "") + 
+            unit = (("Stück " if has_piece_unit else "") + 
                 ("%.0f g" % (kg_per_piece*1000)))
             price = price_per_kg * kg_per_piece
-            if name in piece_units: name += "*"
 
         for s,r in name_changes.items():
             if s in name: name = r
@@ -254,6 +276,11 @@ for sheet, cols in zip([0,0,1,2], ["B:D", "G:I", "A,C", "A,D,E,F"]):
         n = article_number(name)
         article_numbers.append(n)
         
+        for note_key, note_text in notes.items():
+            if note_key in name:
+                note = str_join(note_text, note)
+                break
+        
         if name in split_articles:
             name_base = split_articles[name]["base"] + " "
             name_vars = split_articles[name]["vars"]
@@ -261,7 +288,8 @@ for sheet, cols in zip([0,0,1,2], ["B:D", "G:I", "A,C", "A,D,E,F"]):
             name_base = name
             name_vars = [""]
         for i,name_var in enumerate(name_vars):
-            fs_name = name_base + name_var
+            fs_name = name_base + name_var 
+            if has_piece_unit: fs_name += "*"
             if len(fs_name)>60:
                 raise Exception(f"zu langer Name: {fs_name} {len(fs_name)}>60")
             foodsoft_article = {
@@ -297,5 +325,4 @@ filename = "wild-obermayr.csv"
 print("... writing to",filename)
 with open(filename, mode='wt', encoding='utf-8') as file:
     file.write(foodsoft_table)
-
 
