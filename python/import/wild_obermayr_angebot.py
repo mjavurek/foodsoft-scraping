@@ -3,13 +3,16 @@ import hashlib
 import string
 import re
 
+debug = False
+
+
+# --- producer specific settings
+
 xlsx = "Downloads/Frankkistl 2026.xlsx"
 # sheets: ['Oktober-November2026', 'Pflanzen 2026', 'Säfte 2026']
 
-
-
-
-piece_units = {
+# change unit from 1 kg to "Stück" with specified weight in kg
+piece_units = { # key must fit full original article name (before name_changes are applied and prefix is added) 
     "Zuckerhut": 0.7,
     "Chinakohl": 1.0,
     "Radicchio": 0.5,
@@ -34,7 +37,8 @@ piece_units = {
     "Sellerie": 1.1,
 } 
 
-var_units ={
+# change unit from 1 kg to specified weight in kg
+var_units = { # key must fit full original article name (before name_changes are applied and prefix is added)
     "Herbstrübe": 0.5,
     "Kohlrübe": 0.5, 
     "Schwarzer Rettich": 0.5, 
@@ -54,9 +58,11 @@ name_changes = {
     "Schalottenzw.": "Zwiebeln Schalotten",
     "Gemüsezwiebeln": "Zwiebeln Gemüsezwiebeln",
     "Pepino": "Pepino Melonenbirne",
+    "Weißkraut/flach": "Weißkraut flach",
+    "Weißkraut/rund": "Weißkraut rund",
 }
 
-add_prefix = {
+add_prefix = { # if any of the list strings is found in the article name, add prefix to name
     "Salat": ["Häuptelsalat", "Romanasalat", "Eissalat",
         "Batavia", "Lollo", "Eichblatt", "Endivie", "Zuckerhut", "Chinakohl"],
     "Tomaten": ["paradeiser"],
@@ -66,14 +72,14 @@ add_prefix = {
     "Kürbis": ["Patison", "Hokkaido", "Butternu", "Crown prince", "Longe de Nice"],
 }
 
-split_articles = {
+split_articles = { # split article with variants to individual articles
     "Paprika grün,weiß, lila": {"base": "Paprika", "vars": ["grün", "weiß", "lila"]},
     "Grünkohl Grün/Rot": {"base": "Grünkohl", "vars": ["grün", "rot"]},
     "Pfefferoni": {"base": "Pfefferoni", "vars": ["mild", "scharf"]},
     # "template": {"base": "", "vars": ["", "", ""]},
 }
 
-categories = {
+categories = { # if any of the list strings is found in the article name, apply category specified in key
     "Gemüse": ["Erdäpfel"],
     "Pilze": ["Champignon", "seitling", "Shitake"],
     "Obst": ["Äpfel", 'Mispeln', 'Birnen', 'beeren', 'Kirschen', 'Kriecherl', 'Marillen', 
@@ -87,15 +93,18 @@ categories = {
     
 }
 
-notes = {
+notes = { # if key is found in article name, add note to article
     "Gemüsezwiebel":  "etwas süß, kann roh gegessen werden",
     "Pimientos de Padron": "kleine grüne Paprika",
 }
 
-ignore_articles = [
+ignore_articles = [ # if any of the strings is found in the article name, make it unavailable
     "Erdäpfel",
 ]
 
+
+
+# --- helper functions ----
 
 def is_item_in_str(items, string, lowercase=False):
     if isinstance(items, str): items = [items]
@@ -106,7 +115,14 @@ def is_item_in_str(items, string, lowercase=False):
             return item
     return False
 
+
 def article_number(name, length=6, name_chars=2):
+    # generate an order number for the article based on its name with length characters
+    # use first name_chars of the name for the first order number characters 
+    # so that articles appear in alphabetical order in order lists
+    # test if order numbers are unique has to be performed after all numbers were generated
+    # increase length if this test fails?
+    
     name = name.strip().lower()
 
     # Generate a 64-bit hash
@@ -124,17 +140,23 @@ def article_number(name, length=6, name_chars=2):
         value, remainder = divmod(value, n)
         result = chars[remainder] + result
     
-    #print(name, result, len(result))
-    
-    #return result.zfill(10)[-10:]
-    # return result.zfill(length)[-length:]
     length -= name_chars
     return name[:name_chars].upper() + result.zfill(length)[-length:]
+
 
 def str_join(s1, s2):
     return s1 + (" " if s1 and s2 else "") + s2
 
 
+def weight_str(weight_in_kg):
+    if weight_in_kg < 1.0:
+        return "%.0f g" % (weight_in_kg*1000)
+    else:
+        return ("%g kg" % (weight_in_kg)).replace(".",",")
+        
+        
+        
+# --- import Excel sheet data and save CSV table --------
 
 article_numbers = []
 foodsoft_table = []
@@ -144,41 +166,57 @@ for sheet, cols in [
     [1, "A,C"], # Pflanzen
     [2, "A,D,E,F"],  # Säfte, Brot
 ]:
-    prefix = ""
-    h=1
-    skip_rows=0
+    header = 1 # row number of row headers, row counting starts with 0; set to None of table has no headers
+    skip_rows = 0 # number of rows to be skipped before data starts, only to be set if header is None
+    price_set = None # für Artikel, wo der Preis nur einmal vorab und nicht einzeln bei jedem Artikel angegeben ist, z.B. Brote
+    # wenn price_set auf eine Zahl gesetzt wird, wird für den Artikelpreis dieser Wert verwendet statt row["price"]. 
+    prefix = "" # wird dem Artikelnamen vorangestellt
+    producer = ""        
+    
     if sheet==0: # Gemüse
-        names = ["unit", "name", "price"]
+        row_names = ["unit", "name", "price"]
+    
     elif sheet==1: # Pflanzen
-        names=["name", "price"]
+        row_names = ["name", "price"]
         category = "Pflanze"
         prefix = "Pflanze "
+    
     elif sheet==2: # Säfte, Brot
-        names=["name", "unit", "price", "status"]    
-        h=None
-        skip_rows=2
+        row_names = ["name", "unit", "price", "status"]    
+        header = None
+        skip_rows = 2
         
-
-    d = pd.read_excel(xlsx, sheet_name=sheet, header=h, usecols=cols,
-        names=names, skiprows=skip_rows) 
-    price_set = None
-    producer = ""        
-    origin = ""
+    d = pd.read_excel(xlsx, sheet_name=sheet, header=header, usecols=cols,
+        names=row_names, skiprows=skip_rows) 
+    
+    # --- loop over rows in table ---
     for index, row in d.iterrows():
+        note = "" 
+        origin = ""
         outofstock = ""
         deposit = 0
+        
         if sheet==0: # Gemüse
             unit = row["unit"]
             if not isinstance(unit, str): continue
             unit = unit.strip()
             unit = re.sub(r'(\d)g\b', r'\1 g', unit) # "500g" => "500 g"
             prefix = ""
+        
         elif sheet==1: # Pflanzen
             unit = "Stück"
+        
         elif sheet==2: # Säfte, Brot
             prefix = ""
-            if not isinstance(row["unit"], str): 
-                # print("--", row["name"])
+            if isinstance(row["unit"], str): 
+                unit = row["unit"].strip()
+                unit = re.sub(r'(\d)Liter\b', r'\1 Liter', unit)
+                if "Bio-Brote" in row["name"]:
+                    # Bio-Brote von Strasser Barbara 			kg	€ 6,80
+                    price_set = row["price"]
+                    producer = row["name"].strip()
+                    continue             
+            else: # no unit specified
                 name = row["name"].strip() if isinstance(row["name"], str) else ""
                 if "Brot" == name: 
                     category = "Brot"
@@ -191,27 +229,25 @@ for sheet, cols in [
                     pass
                 else: 
                     continue
-            else:
-                unit = row["unit"].strip()
-                unit = re.sub(r'(\d)Liter\b', r'\1 Liter', unit)
-                if "Bio-Brote" in row["name"]:
-                    # Bio-Brote von Strasser Barbara 			kg	€ 6,80
-                    price_set = row["price"]
-                    producer= row["name"]
-                    continue 
+
             outofstock = row["status"] if isinstance(row["status"], str) else ""
-            deposit = 0 if category=="Brot" else 0.50 
-            # print(row["name"], outofstock!="", type(outofstock))
+            deposit =  0.50 if category!="Brot" else 0 
+
+        # --- end of sheet-specific actions ---------------------------------- 
                        
+        # --- article price ---
         if price_set is None: 
             price = row["price"]
         else:
             price = price_set
             
+        
+        # --- article name ---
         try:
             name = row["name"].strip()
         except:
-            print(d)
+            # if row["name"] is unexpectedly empty, its type is float and applying .strip() raises an error
+            print(d) # helps debugging: show whole imported table data
             raise
         name = prefix + name
         if sheet==2: # Säfte, Brot
@@ -225,82 +261,88 @@ for sheet, cols in [
             elif category!="Brot": 
                 category = "Säfte, Getränke"
              
-        #n = article_number(name)
-        #article_numbers.append(n)
-
+        # add deposit to article name as it is not displayed in the foodsoft order form for ordergroups
         if deposit>0: name += " inkl. %.0f ct Pfand" % (deposit*100)
 
-
-        na =  (
-            pd.isna(price) or 
-            is_item_in_str(ignore_articles, name) or
-            outofstock != ""
-        )
+        # --- article not available? ---
+        if not debug:
+            not_available =  (
+                pd.isna(price) or 
+                is_item_in_str(ignore_articles, name) or
+                outofstock != ""
+            )
+        else: # debug: show conditions why article is not available
+            not_available = ""
+            if pd.isna(price): not_available += "x-noprice "
+            if is_item_in_str(ignore_articles, name): not_available += "x-ignore "
+            if outofstock != "": not_available += "x-" + outofstock
         
-        note = ""
+        # --- article unit ---
         has_piece_unit = name in piece_units
         has_var_unit = name in var_units
         if has_piece_unit or has_var_unit:
             if unit.lower()!="kg": raise Exception(f"{name} Einheit {unit} != kg") 
             kg_per_piece = piece_units.get(name, var_units.get(name))
             price_per_kg = price
-            #name = name + (" (%.2f €/kg)" % price).replace(".",",")
+            #name = name + (" (%.2f €/kg)" % price).replace(".",",")  # moved to note 
             note = ("%.2f €/kg" % price).replace(".",",")
-            unit = (("Stück " if has_piece_unit else "") + 
-                ("%.0f g" % (kg_per_piece*1000)))
-            price = price_per_kg * kg_per_piece
-
-        for s,r in name_changes.items():
-            if s in name: name = r
-              
-
+            unit = (("Stück " if has_piece_unit else "") + weight_str(kg_per_piece))
+            price = price_per_kg * kg_per_piece              
         if unit.lower()=="kg": unit="1 kg"
         if unit.lower()=="stk": unit="Stück"
         if unit.lower()=="bd": unit="Bund"
-        
 
-        if sheet==0:
+        # --- article name changes ----
+        for s,r in name_changes.items():
+            if s in name: name = r
+
+        # --- article name add prefix, set article category ---
+        if sheet==0: # Gemüse
             for prefix,items in add_prefix.items():
                 item = is_item_in_str(items, name, lowercase=True)
                 if item:
                     name = prefix + " " + name
                     break                     
-            category = "Gemüse"
+            category = "Gemüse" # set default 
             for c,items in categories.items():
                 item = is_item_in_str(items, name, lowercase=True)
                 if item:
-                    # print(name, c)
                     category = c
                     break
 
+        # --- generate article order number from article name ---
         n = article_number(name)
         article_numbers.append(n)
         
+        # --- article note ---
         for note_key, note_text in notes.items():
             if note_key in name:
                 note = str_join(note_text, note)
                 break
         
+        # --- split article in different variants ---
         if name in split_articles:
             name_base = split_articles[name]["base"] + " "
             name_vars = split_articles[name]["vars"]
         else:
             name_base = name
             name_vars = [""]
+        
+        # --- prepare CSV table row(s) for article/article variants
         for i,name_var in enumerate(name_vars):
             fs_name = name_base + name_var 
             if has_piece_unit: fs_name += "*"
             if len(fs_name)>60:
                 raise Exception(f"zu langer Name: {fs_name} {len(fs_name)}>60")
             foodsoft_article = {
-                "Status":  "x" if na else "",
+                "Status": ("x" if not_available else "") if not debug else not_available,
                 "Bestellnummer":  n + ("%d"%i if len(name_vars)>1 else ""),
                 "Name":  fs_name,
                 "Notiz":  note,
                 "Produzent":  producer,
                 "Herkunft":  origin,
                 "Einheit":  unit,
-                "Nettopreis":  "%.2f" % (0 if na else price),
+                "Nettopreis":  "%.2f" % (0 if not_available else price),
                 "MwSt":  "0",
                 "Pfand":  "%.2f" % deposit,
                 "Gebindegröße":  "1",
@@ -309,20 +351,24 @@ for sheet, cols in [
                 "Kategorie":  category,
             }
             foodsoft_table.append(";".join(foodsoft_article.values()))   
+        # end for variants of article
+    # end for row in sheet
+# end for sheet in Excel-file-sheets
 
+# --- ensure unique article numbers ---
 print("Bestellnummern gesamt:",len(article_numbers), "davon eindeutig;", len(set(article_numbers)))
 if len(article_numbers) != len(set(article_numbers)):
     raise ValueError("Duplicate article numbers detected!")
 
+# --- export article CSV table ---
 foodsoft_table = (
     ";".join(foodsoft_article.keys()) + # Kopfzeile
     "\n" + "\n".join(foodsoft_table) # Artikel-Daten
 )
-print("---- import CSV: ---")
+print("---- CSV for foodsoft import ---")
 print(foodsoft_table)
 
 filename = "wild-obermayr.csv"
 print("... writing to",filename)
 with open(filename, mode='wt', encoding='utf-8') as file:
     file.write(foodsoft_table)
-
