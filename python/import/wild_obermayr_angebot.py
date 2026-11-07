@@ -44,7 +44,9 @@ var_units = { # key must fit full original article name (before name_changes are
     "Schwarzer Rettich": 0.5, 
     "Daikonrettich": 0.5, 
     "Knoblauch": 0.1,    
-    "Mispeln": 0.5,  
+    "Mispeln": 0.5,
+    "Rote Rüben rot": 0.5,   
+    "Spinat": 0.250, 
 }
 
 name_changes = {
@@ -58,8 +60,13 @@ name_changes = {
     "Schalottenzw.": "Zwiebeln Schalotten",
     "Gemüsezwiebeln": "Zwiebeln Gemüsezwiebeln",
     "Pepino": "Pepino Melonenbirne",
+    "Rote Rüben/Chioggia": "Rote Rüben Chioggia",
     "Weißkraut/flach": "Weißkraut flach",
     "Weißkraut/rund": "Weißkraut rund",
+    "Paprika/reif": "Paprika reif",
+    "Paprika/spitz": "Paprika spitz",
+    "Zuccinisalat": "Zucchinisalat", 
+    # "Longe de Nice": "Longue de Nice",
 }
 
 add_prefix = { # if any of the list strings is found in the article name, add prefix to name
@@ -75,13 +82,19 @@ add_prefix = { # if any of the list strings is found in the article name, add pr
 split_articles = { # split article with variants to individual articles
     "Paprika grün,weiß, lila": {"base": "Paprika", "vars": ["grün", "weiß", "lila"]},
     "Grünkohl Grün/Rot": {"base": "Grünkohl", "vars": ["grün", "rot"]},
+    "Pfefferoni mild od. Scharf" : {"base": "Pfefferoni eingelegt", "vars": ["mild", "scharf"]},
     "Pfefferoni": {"base": "Pfefferoni", "vars": ["mild", "scharf"]},
+    "Thymian/Zitronenthymian": {"base": "", "vars": ["Thymian", "Zitronenthymian"]},
     # "template": {"base": "", "vars": ["", "", ""]},
 }
 
 categories = { # if any of the list strings is found in the article name, apply category specified in key
-    "Gemüse": ["Erdäpfel"],
+    "Gemüse": ["Erdäpfel"], # Erdäpfel: vor Äpfel, sonst Obst!
     "Pilze": ["Champignon", "seitling", "Shitake"],
+    "Säfte, Getränke": ["saft", "most", "cider", "sirup"], # muss vor Obst stehen!
+    "Eingemachtes": ["Essiggurkerl", "Senfgurken", "Russenkraut", "Pfefferoni mild od. Scharf", 
+        "Paprikasalat", "Zucchinisalat", "röster", "mark", "paste"],    # muss vor Obst stehen!
+    "Essig": ["essig" ], # muss vor Obst und nach Eingemachtes stehen!
     "Obst": ["Äpfel", 'Mispeln', 'Birnen', 'beeren', 'Kirschen', 'Kriecherl', 'Marillen', 
         'melone', 'Paw Paw', 'Pfirsich', 'Physalis', 'Quitten', 'Ribisel', 
         'Weichseln ', 'Weintrauben', 'Zwetschken'],
@@ -90,12 +103,29 @@ categories = { # if any of the list strings is found in the article name, apply 
         'Liebstöckel', 'Petersiliengrün', 
         'Rosmarin', 'Schnittknoblauch', 'Schnittlauch', 'Thymian'], 
     "Nüsse": ["nüsse"],
-    
+
+    "Brot" : ["brot"],     
+}
+
+category_numbers = {
+    "Gemüse": 0,
+    "Pilze": 1,
+    "Obst": 2,
+    "Kräuter": 3,
+    "Pflanze": 4,
+    "Säfte, Getränke": 5,
+    "Essig": 6,
+    "Eingemachtes": 7,
+    "Brot": 8,
 }
 
 notes = { # if key is found in article name, add note to article
     "Gemüsezwiebel":  "etwas süß, kann roh gegessen werden",
     "Pimientos de Padron": "kleine grüne Paprika",
+    "Chioggia": "rot-weiß geringelt",
+    "röster": "enthält je nach natürlicher Süße der Früchte ca. 5 bis max. 10 % zugesetzten Zucker",
+    "Cider": "enthält Alkohol",
+    "most": "enthält Alkohol",    
 }
 
 ignore_articles = [ # if any of the strings is found in the article name, make it unavailable
@@ -117,8 +147,8 @@ def is_item_in_str(items, string, lowercase=False):
 
 
 def article_number(name, length=6, name_chars=2):
-    # generate an order number for the article based on its name with length characters
-    # use first name_chars of the name for the first order number characters 
+    # generate an article number for the article based on its name with length characters
+    # use first name_chars of the name for the first article number characters 
     # so that articles appear in alphabetical order in order lists
     # test if order numbers are unique has to be performed after all numbers were generated
     # increase length if this test fails?
@@ -144,8 +174,9 @@ def article_number(name, length=6, name_chars=2):
     return name[:name_chars].upper() + result.zfill(length)[-length:]
 
 
-def str_join(s1, s2):
-    return s1 + (" " if s1 and s2 else "") + s2
+def str_join(str_list):
+    str_list = list(filter(None, str_list))
+    return " ".join(str_list)
 
 
 def weight_str(weight_in_kg):
@@ -160,6 +191,7 @@ def weight_str(weight_in_kg):
 
 article_numbers = []
 foodsoft_table = []
+categories_used = []
 for sheet, cols in [
     [0, "B:D"], # Gemüse Spalte 1
     [0, "G:I"], # Gemüse Spalte 2
@@ -186,6 +218,7 @@ for sheet, cols in [
         header = None
         skip_rows = 2
         
+    print("Lese Blatt", sheet, "Spalten", cols, "aus '%s'" % xlsx, "...");
     d = pd.read_excel(xlsx, sheet_name=sheet, header=header, usecols=cols,
         names=row_names, skiprows=skip_rows) 
     
@@ -195,6 +228,7 @@ for sheet, cols in [
         origin = ""
         outofstock = ""
         deposit = 0
+        deposit_name_suffix = ""
         
         if sheet==0: # Gemüse
             unit = row["unit"]
@@ -202,6 +236,7 @@ for sheet, cols in [
             unit = unit.strip()
             unit = re.sub(r'(\d)g\b', r'\1 g', unit) # "500g" => "500 g"
             prefix = ""
+            category = "Gemüse" # set default 
         
         elif sheet==1: # Pflanzen
             unit = "Stück"
@@ -211,6 +246,8 @@ for sheet, cols in [
             if isinstance(row["unit"], str): 
                 unit = row["unit"].strip()
                 unit = re.sub(r'(\d)Liter\b', r'\1 Liter', unit)
+                unit = re.sub(r'(\d)ml\b', r'\1 ml', unit)
+                if "ml" in unit: unit = "Glas " + unit
                 if "Bio-Brote" in row["name"]:
                     # Bio-Brote von Strasser Barbara 			kg	€ 6,80
                     price_set = row["price"]
@@ -231,7 +268,7 @@ for sheet, cols in [
                     continue
 
             outofstock = row["status"] if isinstance(row["status"], str) else ""
-            deposit =  0.50 if category!="Brot" else 0 
+            deposit =  0.50 if "Liter" in unit or "ml" in unit else 0 
 
         # --- end of sheet-specific actions ---------------------------------- 
                        
@@ -262,7 +299,7 @@ for sheet, cols in [
                 category = "Säfte, Getränke"
              
         # add deposit to article name as it is not displayed in the foodsoft order form for ordergroups
-        if deposit>0: name += " inkl. %.0f ct Pfand" % (deposit*100)
+        if deposit>0: deposit_name_suffix = "inkl. %.0f ct Pfand" % (deposit*100)
 
         # --- article not available? ---
         if not debug:
@@ -281,11 +318,16 @@ for sheet, cols in [
         has_piece_unit = name in piece_units
         has_var_unit = name in var_units
         if has_piece_unit or has_var_unit:
-            if unit.lower()!="kg": raise Exception(f"{name} Einheit {unit} != kg") 
             kg_per_piece = piece_units.get(name, var_units.get(name))
-            price_per_kg = price
-            #name = name + (" (%.2f €/kg)" % price).replace(".",",")  # moved to note 
-            note = ("%.2f €/kg" % price).replace(".",",")
+            if unit.lower()=="kg":  # matches "kg" and "Kg"
+                price_per_kg = price
+            elif unit[-1]=="g" and unit[:-2].isnumeric(): # e.g. "500 g"
+                gram = float(unit[:-2])
+                price_per_kg = price / gram * 1000
+            else: 
+                raise Exception(f"Artikel {name}: Einheit '{unit}' nicht erkannt.") 
+            # name = name + (" (%.2f €/kg)" % price).replace(".",",")  # moved to note 
+            note = ("%.2f €/kg" % price_per_kg).replace(".",",")
             unit = (("Stück " if has_piece_unit else "") + weight_str(kg_per_piece))
             price = price_per_kg * kg_per_piece              
         if unit.lower()=="kg": unit="1 kg"
@@ -296,33 +338,34 @@ for sheet, cols in [
         for s,r in name_changes.items():
             if s in name: name = r
 
-        # --- article name add prefix, set article category ---
-        if sheet==0: # Gemüse
+        # --- article name add prefix ---
+        if sheet==0:
             for prefix,items in add_prefix.items():
                 item = is_item_in_str(items, name, lowercase=True)
                 if item:
                     name = prefix + " " + name
                     break                     
-            category = "Gemüse" # set default 
-            for c,items in categories.items():
-                item = is_item_in_str(items, name, lowercase=True)
-                if item:
-                    category = c
-                    break
+        
+        # --- set article category ---
+        for c,items in categories.items():
+            item = is_item_in_str(items, name, lowercase=True)
+            if item:
+                category = c
+                break
 
-        # --- generate article order number from article name ---
-        n = article_number(name)
+        # --- generate article order number from article name and category---
+        n = "%d%s" % (category_numbers[category],  article_number(name))
         article_numbers.append(n)
         
         # --- article note ---
         for note_key, note_text in notes.items():
             if note_key in name:
-                note = str_join(note_text, note)
+                note = str_join([note_text, note])
                 break
         
         # --- split article in different variants ---
         if name in split_articles:
-            name_base = split_articles[name]["base"] + " "
+            name_base = split_articles[name]["base"]
             name_vars = split_articles[name]["vars"]
         else:
             name_base = name
@@ -330,7 +373,7 @@ for sheet, cols in [
         
         # --- prepare CSV table row(s) for article/article variants
         for i,name_var in enumerate(name_vars):
-            fs_name = name_base + name_var 
+            fs_name = str_join([name_base, name_var, deposit_name_suffix]) 
             if has_piece_unit: fs_name += "*"
             if len(fs_name)>60:
                 raise Exception(f"zu langer Name: {fs_name} {len(fs_name)}>60")
@@ -352,6 +395,11 @@ for sheet, cols in [
             }
             foodsoft_table.append(";".join(foodsoft_article.values()))   
         # end for variants of article
+        
+        if not category in categories_used: 
+            categories_used.append(category)
+            print("  Kategorie neu: '%s'" % category);
+        
     # end for row in sheet
 # end for sheet in Excel-file-sheets
 
@@ -362,13 +410,16 @@ if len(article_numbers) != len(set(article_numbers)):
 
 # --- export article CSV table ---
 foodsoft_table = (
-    ";".join(foodsoft_article.keys()) + # Kopfzeile
-    "\n" + "\n".join(foodsoft_table) # Artikel-Daten
+    ";".join(foodsoft_article.keys()) + "\n" + # Kopfzeile
+    "\n".join(foodsoft_table) # Artikel-Daten
 )
-print("---- CSV for foodsoft import ---")
+print("\n---- CSV for foodsoft import ---")
 print(foodsoft_table)
 
 filename = "wild-obermayr.csv"
 print("... writing to",filename)
 with open(filename, mode='wt', encoding='utf-8') as file:
     file.write(foodsoft_table)
+
+#print("Benutzte Kategorien in Reihenfolge der Excel-Liste:")
+#for i,c in enumerate(categories_used): print('    "%s":' % c, "%d," % i)
